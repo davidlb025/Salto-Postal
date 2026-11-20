@@ -1,4 +1,4 @@
-import { ROOM_VERSION } from './network.js?v=7';
+import { ROOM_VERSION } from './network.js?v=8';
 
 const configUrl=document.querySelector('meta[name="room-config"]')?.content.trim();
 export const usesManagedRooms=!!configUrl;

@@ -1,4 +1,4 @@
-import { ARENAS, COURIERS, avatar, DIRECTIONAL, WIDTH, HEIGHT, raceGeometry, showSeal } from './game.js?v=7';
+import { ARENAS, COURIERS, avatar, DIRECTIONAL, WIDTH, HEIGHT, raceGeometry, showSeal } from './game.js?v=8';
 import { drawProp } from './props.js';
 
 const images=Object.fromEntries([
@@ -175,36 +175,89 @@ function sign(ctx,text,x,y,color) {
   ctx.fillText(text,x+7,y+12);
 }
 
-const joints={
-  fox:[19,13],rabbit:[20,8],bat:[17,12],frog:[16,10],
+const rigs={
+  fox:{size:[23,26],legs:[19,13],head:[13,5],eyes:[15,8],chest:[15,15]},
+  rabbit:{size:[15,26],legs:[20,8],head:[8,7],eyes:[9,10],chest:[8,15]},
+  bat:{size:[23,22],legs:[17,12],head:[13,6],eyes:[15,9],chest:[14,14]},
+  frog:{size:[19,21],legs:[16,10],head:[9,3],eyes:[11,7],chest:[12,13]},
+  hedgehog:{size:[30,35],legs:[29,20],head:[17,7],eyes:[20,14],chest:[19,24]},
+  duck:{size:[28,38],legs:[30,14],head:[16,5],eyes:[17,12],chest:[17,22]},
+  raccoon:{size:[35,37],legs:[30,23],head:[22,7],eyes:[25,12],chest:[24,24]},
+  capybara:{size:[28,37],legs:[30,14],head:[15,5],eyes:[14,8],chest:[14,21]},
 };
 
-export function drawAccessory(ctx,gear,x,y,scale=1) {
+function drawOutfit(ctx,gear,sprite,x,y,w,h,scale) {
   if (!gear||gear==='none') return;
+  const rig=rigs[sprite];
+  const [iw,ih]=rig.size;
+  const anchor=['cap','crown','beret'].includes(gear)?rig.head:gear==='goggles'?rig.eyes:rig.chest;
   ctx.save();
-  ctx.translate(Math.round(x),Math.round(y));
+  ctx.translate(Math.round(x+anchor[0]*w/iw),Math.round(y+anchor[1]*h/ih));
   ctx.scale(scale,scale);
   const fill=(color,left,top,w,h)=>{
     ctx.fillStyle=color;
     ctx.fillRect(left,top,w,h);
   };
   if (gear==='cap') {
-    fill('#222239',-9,-1,20,6);
-    fill('#ed765f',-7,-5,12,8);
-    fill('#ffae78',-7,-5,11,2);
-    fill('#f08c67',4,1,8,3);
+    fill('#222239',-9,-5,15,8);
+    fill('#222239',-4,1,16,4);
+    fill('#ee745e',-8,-4,13,6);
+    fill('#ffac7d',-6,-4,8,2);
+    fill('#ef935f',4,1,7,2);
+    fill('#fff2bc',-1,-2,3,2);
   } else if (gear==='scarf') {
     fill('#182b3c',-10,0,19,5);
     fill('#65dec7',-9,-1,17,3);
     fill('#3a9e9f',-12,2,5,6);
     fill('#b8f7d6',-8,-1,4,1);
   } else if (gear==='star') {
-    fill('#3b2b31',2,-1,9,9);
-    fill('#e3a84e',3,1,7,5);
-    fill('#ffed9a',5,-1,3,9);
-    fill('#fff5ba',5,1,2,2);
+    fill('#372633',-3,-4,7,9);
+    fill('#372633',-5,-2,11,5);
+    fill('#e3a84e',-4,-1,9,3);
+    fill('#ffed9a',-1,-3,3,7);
+    fill('#fff5ba',-1,-1,2,2);
+  } else if (gear==='goggles') {
+    fill('#372b35',-11,-2,21,4);
+    fill('#372b35',-7,-4,9,8);
+    fill('#372b35',3,-4,8,8);
+    fill('#bb7756',-6,-3,7,6);
+    fill('#bb7756',4,-3,6,6);
+    fill('#6cbdcd',-5,-2,5,4);
+    fill('#6cbdcd',5,-2,4,4);
+    fill('#dbf9ea',-5,-2,3,1);
+    fill('#dbf9ea',5,-2,2,1);
+  } else if (gear==='crown') {
+    fill('#43303e',-9,-7,18,10);
+    fill('#efa548',-8,-2,16,4);
+    for (const tip of [-7,-2,3]) fill('#ffe084',tip,tip===-2?-7:-5,4,5);
+    fill('#f47463',-1,0,2,2);
+  } else if (gear==='beret') {
+    fill('#27243c',-10,-4,20,7);
+    fill('#27243c',-7,-6,15,3);
+    fill('#8a65c3',-9,-3,18,4);
+    fill('#be9bea',-6,-5,13,3);
+    fill('#edc5e8',0,-8,2,3);
+  } else if (gear==='bow') {
+    fill('#342537',-8,-3,17,8);
+    fill('#df596c',-7,-2,6,6);
+    fill('#df596c',2,-2,6,6);
+    fill('#ff9e91',-2,0,5,3);
+  } else if (gear==='satchel') {
+    fill('#422c2a',-4,-6,3,5);
+    fill('#422c2a',-1,-3,3,5);
+    fill('#422c2a',1,0,10,10);
+    fill('#ce8050',2,1,8,8);
+    fill('#f7b777',2,1,8,4);
+    fill('#fff2ab',5,4,2,2);
   }
   ctx.restore();
+}
+
+export function drawPortraitOutfit(ctx,gear,sprite) {
+  const [iw,ih]=rigs[sprite].size;
+  const scale=24/Math.max(iw,ih);
+  const w=iw*scale, h=ih*scale;
+  drawOutfit(ctx,gear,sprite,(28-w)/2,(28-h)/2,w,h,.65);
 }
 
 function pose(ctx,sprite,width,run,stride,rising) {
@@ -214,7 +267,7 @@ function pose(ctx,sprite,width,run,stride,rising) {
     image(ctx,sprite,-width/2,-38,width,38);
     return;
   }
-  const [hip,mid]=joints[sprite];
+  const [hip,mid]=rigs[sprite].legs;
   const ih=img.naturalHeight, iw=img.naturalWidth;
   const bodyHeight=Math.round(38*hip/ih);
   const knee=-38+bodyHeight;
@@ -256,8 +309,7 @@ function figure(ctx,p,t) {
   const img=images[courier.sprite];
   const w=img.naturalHeight?Math.min(37,37*img.naturalWidth/img.naturalHeight):36;
   pose(ctx,courier.sprite,w,run,stride,p.ground?null:p.vy<0);
-  if (p.accessory==='cap') drawAccessory(ctx,p.accessory,1,-39,.75);
-  else drawAccessory(ctx,p.accessory,2,-22,.76);
+  drawOutfit(ctx,p.accessory,courier.sprite,-w/2,-38,w,38,.78);
   ctx.restore();
   ctx.fillStyle=COURIERS[p.id].color;
   ctx.font='bold 10px monospace';

@@ -8,7 +8,7 @@
           ".read": "auth != null",
           ".validate": "newData.hasChildren(['host', 'version'])",
           "host": {".validate": "newData.isString() && newData.val() === auth.uid"},
-          "version": {".validate": "newData.val() === 5 || newData.val() === 6 || newData.val() === 7"},
+          "version": {".validate": "newData.val() === 5 || newData.val() === 6 || newData.val() === 7 || newData.val() === 8"},
           "$other": {".validate": false}
         },
         "seats": {

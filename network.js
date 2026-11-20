@@ -1,4 +1,4 @@
-export const ROOM_VERSION=7;
+export const ROOM_VERSION=8;
 const SIGNAL_PREFIX = 'SP'+ROOM_VERSION+'-';
 const routeError='La sala respondió, pero WebRTC no encontró una ruta. Pide al anfitrión que cree una sala en el servidor de salas y comparta el enlace nuevo.';
 const discovery={urls:'stun:stun.l.google.com:19302'};

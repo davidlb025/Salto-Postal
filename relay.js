@@ -1,4 +1,4 @@
-import { ROOM_VERSION } from './network.js?v=7';
+import { ROOM_VERSION } from './network.js?v=8';
 
 function roomSocketUrl() {
   if (document.documentElement.dataset.roomTransport==='relay') {

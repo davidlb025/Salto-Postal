@@ -7,14 +7,25 @@ export const MAX_SCORE = 15;
 export const SCORE_LIMIT = 50;
 export const MOVEMENT_MIN = 65;
 export const MOVEMENT_MAX = 150;
+export const MAX_PLAYERS = 4;
+export const PICK_SECONDS = { min:5, max:60, default:13 };
+export const RACE_SECONDS = { min:10, max:120, default:30 };
+export const RACE_TICK = 1/120;
 
 export const COURIERS = [
   { name:'Brasa', species:'Zorro', color:'#ffb270', sprite:'fox' },
   { name:'Miga', species:'Coneja', color:'#b7f698', sprite:'rabbit' },
   { name:'Eco', species:'Murciélago', color:'#cab3ff', sprite:'bat' },
   { name:'Brote', species:'Rana', color:'#79e8df', sprite:'frog' },
+  { name:'Púa', species:'Erizo', sprite:'hedgehog' },
+  { name:'Junco', species:'Pato', sprite:'duck' },
+  { name:'Niebla', species:'Mapache', sprite:'raccoon' },
+  { name:'Moka', species:'Capibara', sprite:'capybara' },
 ];
-export const ACCESSORIES = { none:'Sin complemento', cap:'Gorra coral', scarf:'Pañuelo turquesa', star:'Insignia dorada' };
+export const ACCESSORIES = {
+  none:'Sin atuendo', cap:'Gorra coral', scarf:'Pañuelo turquesa', star:'Insignia dorada',
+  goggles:'Gafas de aviación', crown:'Corona de cartero', beret:'Boina lavanda', bow:'Pajarita de gala', satchel:'Bandolera postal',
+};
 export const avatar = player=>COURIERS[player.animal??player.id];
 export const defaultProfile = id=>({animal:id,accessory:'none',vote:null,ready:false});
 export const PIECES = {
@@ -35,7 +46,7 @@ export const PIECES = {
   shutter: { name:'Púas retráctiles', w:55, h:12, type:'Trampa', detail:'Las púas avisan antes de salir.' },
   belt: { name:'Cinta', w:88, h:17, type:'Ruta', detail:'Te arrastra en la dirección indicada.' },
   gel: { name:'Gel denso', w:72, h:16, type:'Ruta', detail:'Reduce tu velocidad y la altura del salto.' },
-  trash: { name:'Papelera', w:36, h:36, type:'Herramienta', detail:'Ponla sobre una trampa para retirarla.' },
+  trash: { name:'Papelera', w:36, h:36, type:'Herramienta', detail:'Ponla sobre una pieza colocada para retirarla.' },
 };
 export const DIRECTIONAL = new Set(['emitter','laser','belt']);
 export const DEFAULT_WEIGHTS=Object.freeze({...Object.fromEntries(Object.keys(PIECES).map(kind=>[kind,100])),trash:35});
@@ -48,6 +59,8 @@ export function roomRules(rules) {
     winPoints:bounded(rules?.winPoints,1,SCORE_LIMIT,MAX_SCORE),
     jump:bounded(rules?.jump,MOVEMENT_MIN,MOVEMENT_MAX,100),
     speed:bounded(rules?.speed,MOVEMENT_MIN,MOVEMENT_MAX,100),
+    pickTime:bounded(rules?.pickTime,PICK_SECONDS.min,PICK_SECONDS.max,PICK_SECONDS.default),
+    raceTime:bounded(rules?.raceTime,RACE_SECONDS.min,RACE_SECONDS.max,RACE_SECONDS.default),
     weights:Object.fromEntries(Object.keys(PIECES).map(kind=>[
       kind,bounded(rules?.weights?.[kind],0,100,DEFAULT_WEIGHTS[kind]),
     ])),
@@ -97,7 +110,7 @@ export function voteResult(ids,profiles,fallback) {
   return tied.includes(profiles[0]?.vote)?profiles[0].vote:Math.min(...tied);
 }
 const overlap = (a,b) => a.x<b.x+b.w && a.x+a.w>b.x && a.y<b.y+b.h && a.y+a.h>b.y;
-const PICK_TIME=13, PLACE_TIME=16, RACE_TIME=30;
+const PLACE_TIME=16;
 const active = game => game.players.filter(p=>p.connected);
 const totals = () => ({goal:0,first:0,trap:0,style:0});
 const sum = score => Object.values(score).reduce((a,b)=>a+b,0);
@@ -130,8 +143,8 @@ function roundOffer(g) {
   const traps=Object.keys(PIECES).filter(kind=>PIECES[kind].type==='Trampa');
   const specials=[];
   if (Math.random()*100<weights.spring) specials.push('spring');
-  if ((g.placed.some(part=>traps.includes(part.kind))||traps.some(kind=>weights[kind]>0))&&
-    Math.random()*100<weights.trash) specials.push('trash');
+  const canRemove=g.placed.length||weights.spring>0||routes.some(kind=>weights[kind]>0)||traps.some(kind=>weights[kind]>0);
+  if (canRemove&&Math.random()*100<weights.trash) specials.push('trash');
   const lot=[
     ...weightedSample(routes,3,weights),
     ...weightedSample(traps,Math.min(4,5-specials.length),weights),
@@ -186,7 +199,7 @@ function nextRound(g) {
   g.round++;
   g.phase='draft';
   g.elapsed=0;
-  g.deadline=PICK_TIME;
+  g.deadline=g.rules.pickTime;
   g.lot=roundOffer(g);
   g.offer=[...g.lot];
   g.picks={};
@@ -201,7 +214,7 @@ function nextRound(g) {
   const {origin}=ARENAS[g.arena];
   for (const [i,p] of g.players.entries()) {
     Object.assign(p,{x:origin.x+17+i*31,y:origin.y-30,w:20,h:30,vx:0,vy:0,face:1,ground:true,
-      coyote:0,jumpBuffer:0,previous:0,surface:'',jumpSurface:'',surfaceFace:1,iceCarry:0,
+      coyote:0,jumpBuffer:0,previous:0,inputSequence:0,surface:'',jumpSurface:'',surfaceFace:1,iceCarry:0,
       status:p.connected?'ready':'away',gain:0,score:totals(),seal:false});
   }
   if (!g.offer.length) closeDraft(g);
@@ -292,11 +305,11 @@ export function canPlace(g,part) {
 export function trashTarget(g,paperBin) {
   let target=null,closest=Infinity;
   const x=paperBin.x+paperBin.w/2, y=paperBin.y+paperBin.h/2;
-  for (const trap of g.placed) {
-    if (PIECES[trap.kind]?.type!=='Trampa'||!overlap(trap,paperBin)) continue;
-    const distance=Math.hypot(x-trap.x-trap.w/2,y-trap.y-trap.h/2);
+  for (const part of g.placed) {
+    if (!overlap(part,paperBin)) continue;
+    const distance=Math.hypot(x-part.x-part.w/2,y-part.y-part.h/2);
     if (distance<closest) {
-      target=trap;
+      target=part;
       closest=distance;
     }
   }
@@ -391,11 +404,14 @@ function trapParts(part,time,solids) {
   return {hazards:[body],props:[]};
 }
 
+export function raceSolids(g,time) {
+  const supports=g.placed.filter(p=>PIECES[p.kind].type!=='Trampa'&&(p.collapseAt===undefined||time<p.collapseAt));
+  return [...ARENAS[g.arena].floor,...supports.map(p=>partPosition(p,time))];
+}
+
 export function raceGeometry(g,time) {
-  const placed=g.placed.filter(p=>p.collapseAt===undefined||time<p.collapseAt);
-  const supports=placed.filter(p=>PIECES[p.kind].type!=='Trampa');
-  const solids=[...ARENAS[g.arena].floor,...supports.map(p=>partPosition(p,time))];
-  const traps=placed.filter(p=>PIECES[p.kind].type==='Trampa').map(part=>trapParts(part,time,solids));
+  const solids=raceSolids(g,time);
+  const traps=g.placed.filter(p=>PIECES[p.kind].type==='Trampa').map(part=>trapParts(part,time,solids));
   return {solids,hazards:traps.flatMap(trap=>trap.hazards),props:traps.flatMap(trap=>trap.props)};
 }
 
@@ -440,7 +456,7 @@ function tally(g) {
   emit(g,g.over?'podium':finish.length?'finish':'fail');
 }
 
-function move(g,p,input,dt,solids,hazards) {
+export function advanceRunner(g,p,input,dt,time,solids,onEvent) {
   const steer=Number(Boolean(input&2))-Number(Boolean(input&1));
   if (steer) p.face=steer;
   const target=steer*(p.surface==='gel'?112:255)*(g.rules?.speed??100)/100;
@@ -452,10 +468,10 @@ function move(g,p,input,dt,solids,hazards) {
   p.vx+=Math.max(-acceleration,Math.min(acceleration,target-p.vx));
   const carrying=p.ground&&g.placed.find(part=>{
     if (part.kind!=='ferry') return false;
-    const before=partPosition(part,g.elapsed-dt);
+    const before=partPosition(part,time-dt);
     return Math.abs(p.y+p.h-before.y)<.1&&p.x+p.w>before.x&&p.x<before.x+before.w;
   });
-  const ride=carrying?partPosition(carrying,g.elapsed).x-partPosition(carrying,g.elapsed-dt).x:0;
+  const ride=carrying?partPosition(carrying,time).x-partPosition(carrying,time-dt).x:0;
   p.coyote=p.ground?.105:Math.max(0,p.coyote-dt);
   const jumpPressed=(input&8)||((input&4)&&!(p.previous&4));
   p.jumpBuffer=jumpPressed?.12:Math.max(0,p.jumpBuffer-dt);
@@ -465,7 +481,7 @@ function move(g,p,input,dt,solids,hazards) {
     p.ground=false;
     p.coyote=0;
     p.jumpBuffer=0;
-    emit(g,'jump',p);
+    onEvent?.('jump',p);
   }
   const dx=(p.vx+(p.surface==='belt'?p.surfaceFace*103:0))*dt+ride;
   p.x=Math.max(-p.w/2,Math.min(WIDTH-p.w,p.x+dx));
@@ -486,12 +502,11 @@ function move(g,p,input,dt,solids,hazards) {
       p.y=box.y-p.h;
       if (box.kind==='spring') {
         p.vy=-715;
-        emit(g,'spring',p);
+        onEvent?.('spring',p);
         break;
       }
       if (box.kind==='crumble'&&box.collapseAt===undefined) {
-        box.collapseAt=g.elapsed+.58;
-        emit(g,'crack',box);
+        onEvent?.('crack',box);
       }
       p.ground=true;
       p.surface=box.kind??'';
@@ -501,6 +516,13 @@ function move(g,p,input,dt,solids,hazards) {
     } else if (p.vy<0) p.y=box.y+box.h;
     p.vy=0;
   }
+}
+
+function move(g,p,input,dt,solids,hazards) {
+  advanceRunner(g,p,input,dt,g.elapsed,solids,(sound,source)=>{
+    if (sound==='crack') source.collapseAt=g.elapsed+.58;
+    emit(g,sound,source);
+  });
   const hit=hazards.find(box=>overlap({...p,x:p.x+2,y:p.y+3,w:p.w-4,h:p.h-4},box));
   if (hit||p.y>HEIGHT+40) {
     p.status='out';
@@ -509,6 +531,7 @@ function move(g,p,input,dt,solids,hazards) {
     emit(g,'hit',p);
     return;
   }
+  const map=ARENAS[g.arena];
   if (!p.seal&&overlap(p,map.token)) {
     p.seal=true;
     emit(g,'seal',p);
@@ -528,7 +551,7 @@ export function step(g,inputs,dt) {
   else if (g.phase==='countdown'&&g.elapsed>=g.deadline) {
     g.phase='race';
     g.elapsed=0;
-    g.deadline=RACE_TIME;
+    g.deadline=g.rules.raceTime;
     for (const p of active(g)) p.status='running';
     emit(g,'go');
   } else if (g.phase==='race') {

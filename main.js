@@ -1,21 +1,23 @@
 import {
   ARENAS, COURIERS, ACCESSORIES, avatar, defaultProfile, editProfile, voteResult,
   PIECES, DIRECTIONAL, WIDTH, HEIGHT, MAX_ROUNDS, ROUND_LIMIT, MAX_SCORE, SCORE_LIMIT,
-  MOVEMENT_MIN, MOVEMENT_MAX, DEFAULT_WEIGHTS,
+  MOVEMENT_MIN, MOVEMENT_MAX, DEFAULT_WEIGHTS, MAX_PLAYERS, PICK_SECONDS, RACE_SECONDS, RACE_TICK,
   roomRules, newGame, canVoteReset, voteReset, resetVoteStatus, rankPlayers,
   pieceAt, canPlace, trashTarget, canDraft, canBuildFor, setPreview, draft, build, disconnect, step,
-} from './game.js?v=7';
-import { paint, paintBackdrop, drawAccessory } from './render.js?v=7';
+} from './game.js?v=8';
+import { paint, paintBackdrop, drawPortraitOutfit } from './render.js?v=8';
 import { pieceURL } from './props.js';
-import { ROOM_VERSION, createLink, shortSession, peerLink, normalizeCode, validCode, setRelay, clearRelay, hasRelay } from './network.js?v=7';
-import { relaySession, usesRoomRelay as usesWebSocketRelay } from './relay.js?v=7';
-import { managedSession, usesManagedRooms } from './managed-room.js?v=7';
+import { ROOM_VERSION, createLink, shortSession, peerLink, normalizeCode, validCode, setRelay, clearRelay, hasRelay } from './network.js?v=8';
+import { relaySession, usesRoomRelay as usesWebSocketRelay } from './relay.js?v=8';
+import { managedSession, usesManagedRooms } from './managed-room.js?v=8';
+import { GuestMovement, MotionBuffer, motionPacket, stateVersion } from './motion.js?v=8';
 
 const usesRoomRelay=usesWebSocketRelay||usesManagedRooms;
 const openRoomSession=usesWebSocketRelay?relaySession:usesManagedRooms?managedSession:shortSession;
-import { MotionBuffer, motionPacket, stateVersion } from './motion.js?v=7';
 
 const $ = id=>document.getElementById(id);
+const validSeat=id=>Number.isInteger(id)&&id>=0&&id<MAX_PLAYERS;
+const guestSeats=Array.from({length:MAX_PLAYERS-1},(_,i)=>i+1);
 const canvas=$('game'), ctx=canvas.getContext('2d'), dialog=$('dialog');
 const touchDevice=matchMedia('(pointer: coarse) and (hover: none)');
 const touchLayoutKey='salto-postal-touch-layout';
@@ -25,7 +27,8 @@ const links=new Map();
 const cursors=new Map();
 const buildPoints=new Map();
 const motion=new MotionBuffer();
-let publishedState='',nextMotion=0,nextInput=0;
+const guestMovement=new GuestMovement();
+let publishedState='',nextMotion=0,nextInput=0,inputSequence=0;
 let profiles={0:defaultProfile(0)}, roomStatus='', roomError=false, connectedToRoom=false;
 let settings=roomRules(),buildDrag=null;
 let sentPreview='',sentPreviewAt=0,canvasView={scale:1,x:0,y:0};
@@ -201,6 +204,10 @@ function showRoomRules() {
         ${field('speed','Velocidad (%)',MOVEMENT_MIN,MOVEMENT_MAX)}
         ${field('winPoints','Puntos para ganar',1,SCORE_LIMIT)}
       </div>
+      <div class="rules-fields">
+        ${field('pickTime','Elegir piezas (s)',PICK_SECONDS.min,PICK_SECONDS.max)}
+        ${field('raceTime','Carrera (s)',RACE_SECONDS.min,RACE_SECONDS.max)}
+      </div>
       <details class="rules-advanced">
         <summary>Ajustes avanzados</summary>
         <p>La caja reserva plazas para rutas y trampas. Cuanto más alto el peso de una pieza, más opciones tiene de salir. Con 0 queda fuera. El muelle y la papelera se ajustan en porcentaje.</p>
@@ -228,6 +235,8 @@ function showRoomRules() {
       winPoints:form.elements.winPoints.valueAsNumber,
       jump:form.elements.jump.valueAsNumber,
       speed:form.elements.speed.valueAsNumber,
+      pickTime:form.elements.pickTime.valueAsNumber,
+      raceTime:form.elements.raceTime.valueAsNumber,
       weights:Object.fromEntries(weights.map(input=>[input.name,input.valueAsNumber])),
     });
     broadcastLobby();
@@ -363,7 +372,7 @@ function openShortHost() {
 }
 
 function acceptShortPeer(connection) {
-  const id=[1,2,3].find(slot=>!links.has(slot));
+  const id=guestSeats.find(slot=>!links.has(slot));
   if (mode!=='host'||game||!id) {
     const reject=()=>{
       connection.send({type:'reject',reason:game?'La partida ya ha empezado.':'La sala está completa.'});
@@ -463,9 +472,9 @@ function showHost() {
 
 function refreshHost() {
   if (!$('manual-count')) return;
-  $('manual-count').textContent=roster.length+' de 4 en la cuadrilla';
+  $('manual-count').textContent=`${roster.length} de ${MAX_PLAYERS} en la cuadrilla`;
   if ($('invite')) {
-    $('invite').disabled=!!pending||roster.length===4;
+    $('invite').disabled=!!pending||roster.length===MAX_PLAYERS;
     $('exchange').hidden=!pending;
   }
 }
@@ -483,10 +492,12 @@ function onHostMessage(link,message) {
     if (voteReset(game,link.id,message.vote)) publishState();
     return;
   }
-  if (message.type==='input'&&game.phase==='race'&&Number.isInteger(message.bits)&&message.bits>=0&&message.bits<=7) {
-    const before=remoteKeys.get(link.id)??0;
-    if ((message.bits&4)&&!(before&4)) remoteJumps.add(link.id);
-    remoteKeys.set(link.id,message.bits);
+  if (message.type==='input'&&game.phase==='race'&&Number.isInteger(message.bits)&&message.bits>=0&&message.bits<=7&&
+    Number.isSafeInteger(message.sequence)&&message.sequence>0) {
+    const before=remoteKeys.get(link.id);
+    if (before&&message.sequence<=before.sequence) return;
+    if ((message.bits&4)&&!(before?.bits&4)) remoteJumps.add(link.id);
+    remoteKeys.set(link.id,{bits:message.bits,sequence:message.sequence});
     return;
   }
   if (message.type==='preview') {
@@ -502,8 +513,8 @@ function onHostMessage(link,message) {
 }
 
 async function invite() {
-  if (pending || roster.length===4) return;
-  const id=[1,2,3].find(i=>!links.has(i));
+  if (pending || roster.length===MAX_PLAYERS) return;
+  const id=guestSeats.find(i=>!links.has(i));
   let link;
   try {
     link=createLink(id,()=>{
@@ -598,9 +609,9 @@ async function answer() {
 }
 
 function receiveGuest(_link,message) {
-  if (message.type==='lobby'&&Array.isArray(message.roster)&&COURIERS[message.id]&&message.profiles) {
+  if (message.type==='lobby'&&Array.isArray(message.roster)&&validSeat(message.id)&&message.profiles) {
     self=message.id;
-    roster=message.roster.filter(id=>COURIERS[id]);
+    roster=message.roster.filter(validSeat);
     profiles=message.profiles;
     settings=roomRules(message.rules);
     connectedToRoom=true;
@@ -618,8 +629,12 @@ function receiveGuest(_link,message) {
     else lastInput=-1;
     game=message.game;
   }
-  if (message.type==='motion'&&game&&motion.push(game,message,performance.now())) {
-    game.elapsed=Math.max(game.elapsed,message.elapsed);
+  if (message.type==='motion'&&game) {
+    const now=performance.now();
+    if (motion.push(game,message,now)) {
+      guestMovement.reconcile(game,message,self,now);
+      game.elapsed=Math.max(game.elapsed,message.elapsed);
+    }
   }
   if (message.type==='claimed'||message.type==='blocked') tone('fail');
 }
@@ -663,7 +678,9 @@ function sendInput(force=false) {
   if(mode!=='guest'||!hostLink?.open||game?.phase!=='race') return;
   const bits=ownInput();
   if(force||bits!==lastInput) {
-    hostLink.send({type:'input',match:game.match,round:game.round,bits});
+    const sequence=++inputSequence;
+    guestMovement.record(game,self,bits,sequence,performance.now());
+    hostLink.send({type:'input',match:game.match,round:game.round,bits,sequence});
     lastInput=bits;
   }
 }
@@ -749,10 +766,14 @@ function hostInputs() {
     remoteJumps.clear();
     return {};
   }
-  const input=Object.fromEntries(remoteKeys);
-  input[0]=ownInput()|(touchJump?8:0);
+  const input={0:ownInput()|(touchJump?8:0)};
   touchJump=false;
-  for (const id of remoteJumps) input[id]=(input[id]??0)|8;
+  for (const p of game.players) {
+    const command=remoteKeys.get(p.id);
+    if (!command) continue;
+    input[p.id]=command.bits|(remoteJumps.has(p.id)?8:0);
+    p.inputSequence=command.sequence;
+  }
   remoteJumps.clear();
   return input;
 }
@@ -983,13 +1004,12 @@ function renderRoster() {
 
 function portrait(p) {
   return '<span class="portrait"><img alt="" src="./assets/'+avatar(p).sprite+'.png">'+
-    (p.accessory!=='none'?'<canvas width="28" height="28" class="portrait-gear" data-gear="'+p.accessory+'" aria-hidden="true"></canvas>':'')+'</span>';
+    (p.accessory!=='none'?`<canvas width="28" height="28" class="portrait-gear" data-gear="${p.accessory}" data-sprite="${avatar(p).sprite}" aria-hidden="true"></canvas>`:'')+'</span>';
 }
 
 function drawPortraitAccessories(container) {
   for (const node of container.querySelectorAll('[data-gear]')) {
-    const accessory=node.dataset.gear;
-    drawAccessory(node.getContext('2d'),accessory,14,accessory==='cap'?4:12,.66);
+    drawPortraitOutfit(node.getContext('2d'),node.dataset.gear,node.dataset.sprite);
   }
 }
 
@@ -1001,7 +1021,7 @@ function renderLobby() {
   const local=profiles[self]??defaultProfile(self);
   const focused=station.contains(document.activeElement)?document.activeElement.id:'';
   station.innerHTML='<div class="lobby-title"><div><h2 id="station-title">Estación de reparto</h2><p id="host-count">'+roster.length+
-    ' / 4 repartidores</p></div><div id="room-invite"></div></div><div class="lobby-pads">'+COURIERS.map((slot,id)=>{
+    ` / ${MAX_PLAYERS} repartidores</p></div><div id="room-invite"></div></div><div class="lobby-pads">`+COURIERS.slice(0,MAX_PLAYERS).map((slot,id)=>{
       const p=profiles[id];
       if (!roster.includes(id)||!p) return '<article class="lobby-pad vacant"><span>P'+(id+1)+'</span><div class="slot-empty"></div><p>Libre</p></article>';
       const c=avatar({id,...p});
@@ -1010,7 +1030,7 @@ function renderLobby() {
         (p.vote===null?'Sin voto':ARENAS[p.vote].name)+'</small></article>';
     }).join('')+'</div><div class="lobby-controls">'+
     '<label>Animal<select id="animal-choice">'+COURIERS.map((c,id)=>'<option value="'+id+'"'+(local.animal===id?' selected':'')+'>'+c.species+' · '+c.name+'</option>').join('')+'</select></label>'+
-    '<label>Complemento<select id="gear-choice">'+Object.entries(ACCESSORIES).map(([key,label])=>'<option value="'+key+'"'+(local.accessory===key?' selected':'')+'>'+label+'</option>').join('')+'</select></label>'+
+    '<label>Atuendo<select id="gear-choice">'+Object.entries(ACCESSORIES).map(([key,label])=>'<option value="'+key+'"'+(local.accessory===key?' selected':'')+'>'+label+'</option>').join('')+'</select></label>'+
     '<label>Voto de pista<select id="vote-choice"><option value=""'+(local.vote===null?' selected':'')+'>Sin voto</option>'+
     ARENAS.map((a,id)=>{
       const count=roster.filter(player=>profiles[player].vote===id).length;
@@ -1057,7 +1077,7 @@ function renderLobby() {
   rulesSummary.id='room-rules-summary';
   rulesSummary.textContent=`Hasta ${settings.maxRounds} ${settings.maxRounds===1?'ronda':'rondas'} · `+(settings.resetEvery
     ?`Limpieza cada ${settings.resetEvery} ${settings.resetEvery===1?'ronda':'rondas'}`:'Limpieza por votación')+
-    ` · Meta ${pointLabel(settings.winPoints)}`;
+    ` · Meta ${pointLabel(settings.winPoints)} · Caja ${settings.pickTime} s · Carrera ${settings.raceTime} s`;
   station.querySelector('.lobby-title>div').append(rulesSummary);
   drawPortraitAccessories(station);
   if (focused&&$(focused)) $(focused).focus({preventScroll:true});
@@ -1311,7 +1331,6 @@ function syncUI() {
     }
   }
 }
-const TICK=1/120;
 const SEND_INTERVAL=1000/30;
 let accumulator=0;
 function frame(now) {
@@ -1319,9 +1338,9 @@ function frame(now) {
   accumulator+=dt;
   lastFrame=now;
   if (game&&mode==='host') {
-    while (accumulator>=TICK) {
-      step(game,hostInputs(),TICK);
-      accumulator-=TICK;
+    while (accumulator>=RACE_TICK) {
+      step(game,hostInputs(),RACE_TICK);
+      accumulator-=RACE_TICK;
     }
     publishState();
   } else accumulator=0;
@@ -1353,7 +1372,11 @@ function frame(now) {
   paintBackdrop(ctx,shownArena,canvas.width,canvas.height,now/1000);
   const {x,y,scale}=canvasView;
   ctx.setTransform(scale,0,0,scale,x,y);
-  const view=mode==='guest'&&game?motion.view(game,now):game;
+  let view=mode==='guest'&&game?motion.view(game,now):game;
+  if (mode==='guest') {
+    const runner=guestMovement.view(game,self,now);
+    if (runner) view={...view,players:view.players.map(p=>p.id===self?runner:p)};
+  }
   paint(ctx,view,shownArena,visiblePlacements(view),now/1000,self,false);
   requestAnimationFrame(frame);
 }

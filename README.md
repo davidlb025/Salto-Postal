@@ -9,9 +9,9 @@ Plataformas 2D en línea para 2–4 personas. El escenario ocupa toda la ventana
 3. **Carrera.** Salta entre plataformas y entra en el escáner verde. Recoge la moneda dorada de la pista si quieres optar al bono de estilo. En línea desaparece de tu pantalla al recogerla y sigue disponible para tus rivales.
 4. **Resultados.** Cada celda representa un punto. Los colores conservan el origen de los puntos acumulados y las celdas de la ronda se iluminan al llegar. El podio aparece al alcanzar la meta de puntos o el límite de rondas de la sala.
 
-La partida usa por defecto un máximo de 15 rondas, una limpieza de objetos cada 5 y una meta de 15 puntos. En **Ajustes de partida**, el anfitrión puede cambiar esos límites, la potencia de salto, la velocidad y la aparición de cada pieza. También se limpian los objetos si todos los jugadores conectados votan a favor.
+La partida usa por defecto un máximo de 15 rondas, una limpieza de objetos cada 5 y una meta de 15 puntos. La caja se abre durante un máximo de 13 segundos y la carrera dura hasta 30 segundos. En **Ajustes de partida**, el anfitrión puede cambiar esos tiempos, los límites, la potencia de salto, la velocidad y la aparición de cada pieza. También se limpian los objetos si todos los jugadores conectados votan a favor.
 
-La **Papelera** retira una trampa del escenario, la haya puesto quien la haya puesto. Apunta a una trampa y confirma. En táctil, el botón se llama **Borrar**.
+La **Papelera** retira cualquier pieza colocada durante la partida, incluidas las plataformas, los mecanismos y las trampas. Las piezas originales de la pista quedan protegidas. Apunta a una pieza y confirma. En táctil, el botón se llama **Borrar**.
 
 | Acción | Puntos |
 | --- | ---: |

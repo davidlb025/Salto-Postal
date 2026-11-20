@@ -75,5 +75,21 @@
   "assets/parcel.png": {
     "asset_id": "ec3995b4-beb2-4633-a3dc-cd4489589605",
     "sha12": "894e63ab5be6"
+  },
+  "assets/hedgehog.png": {
+    "asset_id": "14f53c2b-edf3-4d9b-9693-778130c955f1",
+    "sha12": "e6051e6f8ac0"
+  },
+  "assets/duck.png": {
+    "asset_id": "14f53c2b-edf3-4d9b-9693-778130c955f1",
+    "sha12": "dbf6a0c598e1"
+  },
+  "assets/raccoon.png": {
+    "asset_id": "14f53c2b-edf3-4d9b-9693-778130c955f1",
+    "sha12": "7a7aee6ab206"
+  },
+  "assets/capybara.png": {
+    "asset_id": "14f53c2b-edf3-4d9b-9693-778130c955f1",
+    "sha12": "49abca892b2f"
   }
 }
