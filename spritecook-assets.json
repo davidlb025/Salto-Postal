@@ -1,0 +1,79 @@
+{
+  "assets/trash.png": {
+    "asset_id": "bd4f50e8-8cbb-4951-8624-8f3561363f56",
+    "sha12": "6af2ad1e64a3",
+    "label": "Papelera"
+  },
+  "assets/fox.png": {
+    "asset_id": "b7fc2b50-1d23-41ad-a964-7be3fb693b34",
+    "sha12": "25f088197d88"
+  },
+  "assets/rabbit.png": {
+    "asset_id": "b7fc2b50-1d23-41ad-a964-7be3fb693b34",
+    "sha12": "1ccc5223e2a6"
+  },
+  "assets/bat.png": {
+    "asset_id": "b7fc2b50-1d23-41ad-a964-7be3fb693b34",
+    "sha12": "805706bda2fd"
+  },
+  "assets/frog.png": {
+    "asset_id": "b7fc2b50-1d23-41ad-a964-7be3fb693b34",
+    "sha12": "20ca98a4460a"
+  },
+  "assets/beam.png": {
+    "asset_id": "b7fc2b50-1d23-41ad-a964-7be3fb693b34",
+    "sha12": "1568680fcd0e"
+  },
+  "assets/spike.png": {
+    "asset_id": "b7fc2b50-1d23-41ad-a964-7be3fb693b34",
+    "sha12": "61d8506d9e91"
+  },
+  "assets/spring.png": {
+    "asset_id": "b7fc2b50-1d23-41ad-a964-7be3fb693b34",
+    "sha12": "45e054797e48"
+  },
+  "assets/fan.png": {
+    "asset_id": "b7fc2b50-1d23-41ad-a964-7be3fb693b34",
+    "sha12": "70e2c0362179"
+  },
+  "assets/door.png": {
+    "asset_id": "b7fc2b50-1d23-41ad-a964-7be3fb693b34",
+    "sha12": "389d84f3f920"
+  },
+  "assets/port.webp": {
+    "asset_id": "7d672851-9977-4908-8702-466c537e2fa8",
+    "sha12": "fb85d54311a0"
+  },
+  "assets/piston.png": {
+    "asset_id": "ec3995b4-beb2-4633-a3dc-cd4489589605",
+    "sha12": "bf272e93c2a0"
+  },
+  "assets/emitter.png": {
+    "asset_id": "ec3995b4-beb2-4633-a3dc-cd4489589605",
+    "sha12": "0b24b6a59d4e"
+  },
+  "assets/ferry.png": {
+    "asset_id": "ec3995b4-beb2-4633-a3dc-cd4489589605",
+    "sha12": "71ee1cc42500"
+  },
+  "assets/crumble.png": {
+    "asset_id": "ec3995b4-beb2-4633-a3dc-cd4489589605",
+    "sha12": "436d5fab1d9e"
+  },
+  "assets/ice.png": {
+    "asset_id": "ec3995b4-beb2-4633-a3dc-cd4489589605",
+    "sha12": "496161169813"
+  },
+  "assets/seal.png": {
+    "asset_id": "ec3995b4-beb2-4633-a3dc-cd4489589605",
+    "sha12": "ccd0453f0d17"
+  },
+  "assets/spark.png": {
+    "asset_id": "ec3995b4-beb2-4633-a3dc-cd4489589605",
+    "sha12": "c98155c9faaa"
+  },
+  "assets/parcel.png": {
+    "asset_id": "ec3995b4-beb2-4633-a3dc-cd4489589605",
+    "sha12": "894e63ab5be6"
+  }
+}

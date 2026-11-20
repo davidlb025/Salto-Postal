@@ -1,0 +1,11 @@
+.impeccable/hook.cache.json
+.impeccable/config.local.json
+.impeccable/config.json
+.firebase/
+firebase-debug*.log
+database-debug.log
+firebase-settings.js
+room-config.json
+.env
+.env.*
+
