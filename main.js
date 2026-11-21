@@ -1123,46 +1123,106 @@ function renderPodium(sheet,g) {
   if (sheet.dataset.podiumMatch===g.match) return;
   sheet.dataset.podiumMatch=g.match;
   const standings=g.standings??rankPlayers(g.players);
-  const podium=standings.filter(entry=>entry.rank<=3);
-  const classic=podium.map(entry=>entry.rank).join() === '1,2,3';
-  const highestRank=Math.max(1,...podium.map(entry=>entry.rank));
-  sheet.style.setProperty('--winner-reveal',(highestRank-1)*200+'ms');
-  sheet.innerHTML='<div class="podium-header"><h2>Podio</h2><p></p></div><div class="podium-confetti" aria-hidden="true"></div>';
-  sheet.querySelector('p').textContent=g.result;
-  const particles=sheet.querySelector('.podium-confetti');
-  for (let i=0;i<20;i++) {
-    const piece=document.createElement('i');
-    piece.style.setProperty('--x',((i*37)%100)+'%');
-    piece.style.setProperty('--drift',((i*19)%96-48)+'px');
-    piece.style.setProperty('--lag',(i%6)*55+'ms');
-    particles.append(piece);
+  const podium=standings.filter(entry=>entry.rank<=3).map(entry=>({...entry}));
+  const winners=podium.filter(entry=>entry.rank===1);
+  const runnersUp=podium.filter(entry=>entry.rank!==1);
+  const left=runnersUp.filter((_,index)=>index%2===0).reverse();
+  const right=runnersUp.filter((_,index)=>index%2===1);
+  const slots=[...left,...winners,...right];
+  const ranks=[...new Set(podium.map(entry=>entry.rank))].sort((a,b)=>b-a);
+  const interval=1450;
+  const riseTime=520;
+  const spotlight=Math.max(0,ranks.length-1)*interval+riseTime;
+  const celebration=spotlight+850;
+
+  sheet.innerHTML='<div class="podium-scene"><header class="podium-header"><h2 tabindex="-1">Podio</h2><p class="podium-result"></p></header>'+
+    '<div class="podium-floor"><ol class="podium" role="list"></ol></div>'+
+    '<footer class="podium-footer"><div class="podium-actions"></div></footer><div class="podium-confetti" aria-hidden="true"></div></div>';
+  const scene=sheet.firstElementChild;
+  scene.style.setProperty('--rise-time',riseTime+'ms');
+  scene.style.setProperty('--spotlight',spotlight+'ms');
+  scene.style.setProperty('--celebration',celebration+'ms');
+  const result=scene.querySelector('.podium-result');
+  result.textContent=g.result;
+  const steps=scene.querySelector('.podium');
+  const columns=Math.max(1,slots.length);
+  scene.style.setProperty('--columns',columns);
+
+  for (const [index,rank] of ranks.entries()) {
+    const group=slots.map((entry,slot)=>({entry,slot})).filter(({entry})=>entry.rank===rank);
+    // Center each rank as a group before moving it to its final columns.
+    const center=group.reduce((sum,{slot})=>sum+slot+.5,0)/group.length;
+    const offset=(slots.length/2-center)*100;
+    for (const {entry,slot} of group) {
+      entry.slot=slot;
+      entry.offset=offset;
+      entry.arrival=index*interval;
+    }
   }
-  const steps=document.createElement('ol');
-  steps.className='podium'+(classic?' podium-classic':'');
-  steps.style.setProperty('--columns',Math.max(1,podium.length));
-  for (const {id,rank} of podium) {
+  scene.style.setProperty('--spot-offset',(left.length+winners.length/2)/columns-.5);
+  scene.style.setProperty('--spot-size',winners.length/columns/2);
+
+  for (const {id,rank,slot,offset,arrival} of podium) {
     const player=g.players.find(p=>p.id===id);
     const step=document.createElement('li');
     step.dataset.rank=rank;
-    step.style.setProperty('--arrival',(highestRank-rank)*200+'ms');
-    step.innerHTML=portrait(player)+
-      `<strong>P${id+1} ${avatar(player).name}</strong><div class="podium-step"><span aria-label="Puesto ${rank}">${rank}</span><small>${pointLabel(player.points)}</small></div>`;
+    step.style.setProperty('--slot',slot+1);
+    step.style.setProperty('--offset',offset+'%');
+    step.style.setProperty('--arrival',arrival+'ms');
+    step.style.setProperty('--settle',(arrival+(rank===1?0:interval-220))+'ms');
+    step.innerHTML='<div class="podium-entry"><div class="podium-courier">'+portrait(player)+
+      `<strong>P${id+1} ${avatar(player).name}</strong></div><div class="podium-step"><span class="podium-medal" aria-label="Puesto ${rank}">${rank}</span>`+
+      `<small>${pointLabel(player.points)}</small></div></div>`;
     steps.append(step);
   }
-  sheet.append(steps);
+
+  const footer=scene.querySelector('.podium-footer');
+  const actions=footer.querySelector('.podium-actions');
   for (const {id,rank} of standings.filter(entry=>entry.rank>3)) {
     const player=g.players.find(p=>p.id===id);
     const row=document.createElement('p');
     row.className='podium-remaining';
     row.textContent=`${rank}º · P${id+1} ${avatar(player).name} · ${pointLabel(player.points)}`;
-    sheet.append(row);
+    footer.insertBefore(row,actions);
   }
-  drawPortraitAccessories(sheet);
-  if (mode==='host') sheet.append(button('Volver al lobby',()=>{
+  drawPortraitAccessories(scene);
+
+  const skip=button('Saltar animación',()=>{
+    scene.classList.add('podium-instant');
+    finishReveal();
+  },'ghost');
+  const back=mode==='host'?button('Volver al lobby',()=>{
     game=null;
     profiles=Object.fromEntries(roster.map(id=>[id,{...profiles[id],ready:false}]));
     broadcastLobby(true);
-  },'primary'));
+  },'primary'):null;
+  actions.append(skip);
+  if (back) {
+    back.hidden=true;
+    actions.append(back);
+  }
+  function finishReveal() {
+    const moveFocus=document.activeElement===skip;
+    skip.hidden=true;
+    if (back) back.hidden=false;
+    if (moveFocus) (back??scene.querySelector('h2')).focus({preventScroll:true});
+  }
+  if (!podium.length||matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    scene.classList.add('podium-instant');
+    finishReveal();
+    return;
+  }
+  result.addEventListener('animationend',finishReveal,{once:true});
+
+  const particles=scene.querySelector('.podium-confetti');
+  for (let i=0;i<36;i++) {
+    const piece=document.createElement('i');
+    piece.style.setProperty('--x',((i*37)%100)+'%');
+    piece.style.setProperty('--drift',((i*19)%26-13)+'vw');
+    piece.style.setProperty('--lag',((i*127)%1100)+'ms');
+    piece.style.setProperty('--fall',(1200+(i*53)%800)+'ms');
+    particles.append(piece);
+  }
 }
 
 function renderWork() {
@@ -1177,7 +1237,7 @@ function renderWork() {
   sheet.classList.toggle('podium-sheet',finale);
   if (!finale&&sheet.dataset.podiumMatch) {
     delete sheet.dataset.podiumMatch;
-    sheet.style.removeProperty('--winner-reveal');
+    sheet.replaceChildren();
   }
   if (phase==='draft') {
     const currentDraft=g.match+'/'+g.round;
@@ -1269,8 +1329,9 @@ function syncUI() {
     const menu=!g&&!waiting;
     document.body.dataset.phase=phase??(menu?'menu':'lobby');
     $('start-screen').hidden=!menu;
-    $('match-hud').hidden=!g;
-    $('controls').hidden=!g;
+    const showingPodium=phase==='result'&&g.over;
+    $('match-hud').hidden=!g||showingPodium;
+    $('controls').hidden=!g||showingPodium;
     $('exit').hidden=mode==='menu';
     $('stage').classList.toggle('build',builder()!==undefined);
     $('arena-label').textContent=ARENAS[g?.arena??arena].name;
