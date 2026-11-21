@@ -1,4 +1,4 @@
-import { ARENAS, COURIERS, avatar, DIRECTIONAL, WIDTH, HEIGHT, raceGeometry, showSeal } from './game.js?v=8';
+import { ARENAS, COURIERS, avatar, DIRECTIONAL, WIDTH, HEIGHT, raceGeometry, showSeal, gameArena } from './game.js?v=10';
 import { drawProp } from './props.js';
 
 const images=Object.fromEntries([
@@ -453,19 +453,22 @@ function bursts(ctx,g,now) {
   ctx.globalAlpha=1;
 }
 
-export function paintBackdrop(ctx,arenaIndex,width,height,time) {
+export function paintBackdrop(ctx,arenaIndex,width,height,time,map=ARENAS[arenaIndex]) {
   const ratio=Math.max(width/WIDTH,height/HEIGHT);
   ctx.save();
   ctx.imageSmoothingEnabled=false;
   ctx.translate((width-WIDTH*ratio)/2,(height-HEIGHT*ratio)/2);
   ctx.scale(ratio,ratio);
-  world(ctx,ARENAS[arenaIndex].theme,reduced.matches?0:time);
+  world(ctx,map.theme,reduced.matches?0:time);
   ctx.restore();
 }
 
-export function paint(ctx,g,arenaIndex,previews,time,viewer=null,drawWorld=true) {
-  const t=reduced.matches?0:time;
-  const map=ARENAS[g?.arena??arenaIndex];
+function paintToken(ctx,map,t) {
+  const {x,y}=map.token;
+  image(ctx,'seal',x-2,y-1+Math.sin(t*4)*3,22,22);
+}
+
+export function paintArena(ctx,map,t=0,drawWorld=true,showToken=false) {
   ctx.imageSmoothingEnabled=false;
   if (drawWorld) world(ctx,map.theme,t);
   for (const box of map.floor) platform(ctx,box,map.theme);
@@ -479,6 +482,12 @@ export function paint(ctx,g,arenaIndex,previews,time,viewer=null,drawWorld=true)
   ctx.globalAlpha=1;
   sign(ctx,'ENTREGA',door.x-7,door.y-23,'#b7f698');
   sign(ctx,'SALIDA',map.origin.x+4,map.origin.y+19,'#ffbc83');
+  if (showToken) paintToken(ctx,map,t);
+}
+
+export function paint(ctx,g,arenaIndex,previews,time,viewer=null,drawWorld=true,map=g?gameArena(g):ARENAS[arenaIndex]) {
+  const t=reduced.matches?0:time;
+  paintArena(ctx,map,t,drawWorld,!g&&map!==ARENAS[arenaIndex]);
 
   if (g) {
     if (g.phase==='race') {
@@ -489,13 +498,10 @@ export function paint(ctx,g,arenaIndex,previews,time,viewer=null,drawWorld=true)
         if (g.phase!=='result'||part.collapseAt===undefined) machine(ctx,part,t,0);
       }
     }
-    if (showSeal(g,viewer)) {
-      const {x,y}=map.token;
-      image(ctx,'seal',x-2,y-1+Math.sin(t*4)*3,22,22);
-    }
+    if (showSeal(g,viewer)) paintToken(ctx,map,t);
     for (const p of g.players) figure(ctx,p,t);
     bursts(ctx,g,time);
-  } else {
+  } else if (map===ARENAS[arenaIndex]) {
     const a=map.floor[3], b=map.floor[4];
     figure(ctx,{id:0,x:a.x+35,y:a.y-30,w:20,h:30,ground:true,face:1,vx:35},t);
     figure(ctx,{id:1,x:b.x+18,y:b.y-30,w:20,h:30,ground:true,face:-1,vx:40},t+.4);

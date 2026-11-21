@@ -1,16 +1,18 @@
 import {
-  ARENAS, COURIERS, ACCESSORIES, avatar, defaultProfile, editProfile, voteResult,
+  ARENAS, COURIERS, ACCESSORIES, avatar, defaultProfile, editProfile, voteResult, gameArena,
   PIECES, DIRECTIONAL, WIDTH, HEIGHT, MAX_ROUNDS, ROUND_LIMIT, MAX_SCORE, SCORE_LIMIT,
   MOVEMENT_MIN, MOVEMENT_MAX, DEFAULT_WEIGHTS, MAX_PLAYERS, PICK_SECONDS, RACE_SECONDS, RACE_TICK,
   roomRules, newGame, canVoteReset, voteReset, resetVoteStatus, rankPlayers,
   pieceAt, canPlace, trashTarget, canDraft, canBuildFor, setPreview, draft, build, disconnect, step,
-} from './game.js?v=8';
-import { paint, paintBackdrop, drawPortraitOutfit } from './render.js?v=8';
+} from './game.js?v=10';
+import { paint, paintBackdrop, drawPortraitOutfit } from './render.js?v=10';
+import { MAP_FORMAT_VERSION, arenaFromMap, downloadMap, readMap, readMapFile } from './map-data.js?v=10';
+import { openMapEditor } from './map-editor.js?v=10';
 import { pieceURL } from './props.js';
 import { ROOM_VERSION, createLink, shortSession, peerLink, normalizeCode, validCode, setRelay, clearRelay, hasRelay } from './network.js?v=8';
 import { relaySession, usesRoomRelay as usesWebSocketRelay } from './relay.js?v=8';
 import { managedSession, usesManagedRooms } from './managed-room.js?v=8';
-import { GuestMovement, MotionBuffer, motionPacket, stateVersion } from './motion.js?v=8';
+import { GuestMovement, MotionBuffer, motionPacket, stateVersion } from './motion.js?v=10';
 
 const usesRoomRelay=usesWebSocketRelay||usesManagedRooms;
 const openRoomSession=usesWebSocketRelay?relaySession:usesManagedRooms?managedSession:shortSession;
@@ -33,6 +35,7 @@ let profiles={0:defaultProfile(0)}, roomStatus='', roomError=false, connectedToR
 let settings=roomRules(),buildDrag=null;
 let sentPreview='',sentPreviewAt=0,canvasView={scale:1,x:0,y:0};
 let roomSession=null,roomCode='',hostedManually=false;
+let roomMap=null,roomMapKey='',roomMapRevision=0;
 let mode='menu', game=null, arena=0, self=0, roster=[0];
 let muted=false,audio,lastEvent=0,lastFrame=performance.now(),lastInput=-1;
 let uiKey='', buildKey='', draftKey='', dialogPage='', pending=null, hostLink=null, countText='', lastMatch;
@@ -172,7 +175,9 @@ function broadcastLobby(returnToLobby=false) {
   roster=[0,...activeLinks().map(link=>link.id)].sort((a,b)=>a-b);
   profiles=Object.fromEntries(roster.map(id=>[id,profiles[id]??defaultProfile(id)]));
   const selected=voteResult(roster,profiles,arena);
-  for(const link of activeLinks()) link.send({type:'lobby',id:link.id,roster,arena:selected,profiles,rules:settings,returnToLobby});
+  for(const link of activeLinks()) {
+    link.send({type:'lobby',id:link.id,roster,arena:selected,profiles,rules:settings,returnToLobby,customMap:roomMap});
+  }
   if(dialogPage==='host') refreshHost();
 }
 function changeProfile(patch) {
@@ -184,8 +189,64 @@ function changeProfile(patch) {
   }
 }
 function canStartRoom() {
-  return roster.length>=2&&roster.every(id=>profiles[id]?.ready);
+  return roster.length>=2&&roster.every(id=>profiles[id]?.ready)&&!waitingForMapSupport();
 }
+function waitingForMapSupport() {
+  return mode==='host'&&!!roomMap&&activeLinks().some(link=>!link.supportsMaps);
+}
+function setRoomMap(map) {
+  const key=map?JSON.stringify(map):'';
+  if (key===roomMapKey) return;
+  roomMap=map;
+  roomMapKey=key;
+  roomMapRevision++;
+}
+
+function useRoomMap(map) {
+  if (mode!=='host'||game) return;
+  setRoomMap(map);
+  profiles=Object.fromEntries(roster.map(id=>[id,{...profiles[id],ready:false}]));
+  broadcastLobby();
+}
+
+function showRoomMap() {
+  if (mode!=='host'||game) return;
+  modal('Mapa de la sala','room-map',`
+    <p id="room-map-current"></p>
+    <div class="actions">
+      <button id="import-room-map" class="primary">Cargar archivo JSON</button>
+      <button id="edit-room-map">${roomMap?'Editar mapa':'Crear mapa'}</button>
+      ${roomMap?'<button id="remove-room-map" class="ghost">Quitar mapa personalizado</button>':''}
+    </div>
+    <input type="file" id="room-map-file" accept=".json,application/json" hidden>
+    <p id="room-map-status" role="status"></p>`);
+  $('room-map-current').textContent=roomMap?roomMap.name:'Crea un mapa o carga un archivo de Salto Postal. Todos jugarán en esa pista.';
+  const fileInput=$('room-map-file');
+  const status=$('room-map-status');
+  let upload=0;
+  $('import-room-map').onclick=()=>fileInput.click();
+  fileInput.onchange=async()=>{
+    const file=fileInput.files[0];
+    fileInput.value='';
+    if (!file) return;
+    const attempt=++upload;
+    try {
+      const map=await readMapFile(file);
+      if (attempt!==upload||!dialog.open||dialogPage!=='room-map'||$('room-map-file')!==fileInput||mode!=='host'||game) return;
+      useRoomMap(map);
+      dialog.close();
+    } catch (error) { if (attempt===upload) status.textContent=error.message; }
+  };
+  $('edit-room-map').onclick=()=>{
+    dialog.close();
+    openMapEditor({map:roomMap,onUse:useRoomMap});
+  };
+  if (roomMap) $('remove-room-map').onclick=()=>{
+    useRoomMap(null);
+    dialog.close();
+  };
+}
+$('create-map').onclick=()=>openMapEditor();
 function pointLabel(points) {
   return `${points} ${points===1?'pto':'pts'}`;
 }
@@ -246,7 +307,7 @@ function showRoomRules() {
 function startMatch() {
   if (mode!=='host'||game||!canStartRoom()) return;
   arena=voteResult(roster,profiles,arena);
-  game=newGame(roster,arena,profiles,settings);
+  game=newGame(roster,arena,profiles,settings,roomMap);
   lastEvent=0;
   buildPoints.clear();
   clearInputs();
@@ -265,6 +326,7 @@ function reset() {
   self=0;
   profiles={0:defaultProfile(0)};
   settings=roomRules();
+  setRoomMap(null);
   connectedToRoom=false;
   pending=hostLink=null;
   links.clear();
@@ -481,6 +543,10 @@ function refreshHost() {
 function onHostMessage(link,message) {
   if (!link.open) return;
   if (!game) {
+    if (message.type==='map-support'&&message.version===MAP_FORMAT_VERSION) {
+      link.supportsMaps=true;
+      return;
+    }
     if (message.type==='profile'&&message.patch&&typeof message.patch==='object'&&profiles[link.id]) {
       profiles[link.id]=editProfile(profiles[link.id],message.patch);
       broadcastLobby();
@@ -608,8 +674,15 @@ async function answer() {
   }
 }
 
-function receiveGuest(_link,message) {
+function receiveGuest(link,message) {
+  if (mode!=='guest'||link!==hostLink) return;
   if (message.type==='lobby'&&Array.isArray(message.roster)&&validSeat(message.id)&&message.profiles) {
+    if (!link.announcedMaps) {
+      link.announcedMaps=true;
+      link.send({type:'map-support',version:MAP_FORMAT_VERSION});
+    }
+    try { setRoomMap(message.customMap?readMap(message.customMap):null); }
+    catch { return; }
     self=message.id;
     roster=message.roster.filter(validSeat);
     profiles=message.profiles;
@@ -623,8 +696,12 @@ function receiveGuest(_link,message) {
     if (ARENAS[message.arena]) arena=message.arena;
   }
   if (message.type==='state'&&message.game?.players&&ARENAS[message.game.arena]) {
-    if (!game||message.game.event.id<lastEvent) lastEvent=0;
     const next=message.game;
+    if (next.customMap) {
+      try { next.customMap=game?.match===next.match&&game.customMap?game.customMap:readMap(next.customMap); }
+      catch { return; }
+    }
+    if (!game||next.event.id<lastEvent) lastEvent=0;
     if (game?.match===next.match&&game.round===next.round&&game.phase===next.phase) next.elapsed=Math.max(game.elapsed,next.elapsed);
     else lastInput=-1;
     game=message.game;
@@ -1025,17 +1102,18 @@ function renderLobby() {
       const p=profiles[id];
       if (!roster.includes(id)||!p) return '<article class="lobby-pad vacant"><span>P'+(id+1)+'</span><div class="slot-empty"></div><p>Libre</p></article>';
       const c=avatar({id,...p});
+      const vote=roomMap?'':'<small>'+(p.vote===null?'Sin voto':ARENAS[p.vote].name)+'</small>';
       return '<article class="lobby-pad'+(p.ready?' ready':'')+'" style="--player:'+slot.color+'"><span>P'+(id+1)+(id===self?' · TÚ':'')+
-        '</span>'+portrait({id,...p})+'<strong>'+c.name+'</strong><p>'+ (p.ready?'Listo':'Preparando')+'</p><small>'+
-        (p.vote===null?'Sin voto':ARENAS[p.vote].name)+'</small></article>';
+        '</span>'+portrait({id,...p})+'<strong>'+c.name+'</strong><p>'+ (p.ready?'Listo':'Preparando')+'</p>'+vote+'</article>';
     }).join('')+'</div><div class="lobby-controls">'+
     '<label>Animal<select id="animal-choice">'+COURIERS.map((c,id)=>'<option value="'+id+'"'+(local.animal===id?' selected':'')+'>'+c.species+' · '+c.name+'</option>').join('')+'</select></label>'+
     '<label>Atuendo<select id="gear-choice">'+Object.entries(ACCESSORIES).map(([key,label])=>'<option value="'+key+'"'+(local.accessory===key?' selected':'')+'>'+label+'</option>').join('')+'</select></label>'+
-    '<label>Voto de pista<select id="vote-choice"><option value=""'+(local.vote===null?' selected':'')+'>Sin voto</option>'+
-    ARENAS.map((a,id)=>{
-      const count=roster.filter(player=>profiles[player].vote===id).length;
-      return '<option value="'+id+'"'+(local.vote===id?' selected':'')+'>'+a.name+(count?' · '+count:'')+'</option>';
-    }).join('')+'</select></label></div><div class="lobby-bottom"><p id="lobby-hint"></p><div class="actions"></div></div>';
+    (roomMap?'<div class="lobby-map-choice"><span>Mapa de la sala</span><strong id="active-room-map"></strong></div>'
+      :'<label>Voto de pista<select id="vote-choice"><option value=""'+(local.vote===null?' selected':'')+'>Sin voto</option>'+
+        ARENAS.map((a,id)=>{
+          const count=roster.filter(player=>profiles[player].vote===id).length;
+          return '<option value="'+id+'"'+(local.vote===id?' selected':'')+'>'+a.name+(count?' · '+count:'')+'</option>';
+        }).join('')+'</select></label>')+'</div><div class="lobby-bottom"><p id="lobby-hint"></p><div class="actions"></div></div>';
   const inviteSlot=$('room-invite');
   if (host&&hostedManually) inviteSlot.append(button('Invitar manualmente',showHost,'secondary'));
   else if (host) {
@@ -1056,23 +1134,32 @@ function renderLobby() {
   }
   $('animal-choice').onchange=event=>changeProfile({animal:Number(event.target.value)});
   $('gear-choice').onchange=event=>changeProfile({accessory:event.target.value});
-  $('vote-choice').onchange=event=>changeProfile({vote:event.target.value===''?null:Number(event.target.value)});
+  if (roomMap) $('active-room-map').textContent=roomMap.name;
+  else $('vote-choice').onchange=event=>changeProfile({vote:event.target.value===''?null:Number(event.target.value)});
   const actions=station.querySelector('.lobby-bottom .actions');
   const ready=button(local.ready?'Quitar listo':'Listo',()=>changeProfile({ready:!local.ready}),local.ready?'secondary':'primary');
   ready.id='ready-toggle';
   ready.setAttribute('aria-pressed',String(local.ready));
   actions.append(ready);
+  if (roomMap) {
+    const download=button('Descargar mapa',()=>downloadMap(roomMap),'ghost');
+    download.id='download-room-map';
+    actions.prepend(download);
+  }
   if (host) {
+    const mapButton=button(roomMap?'Cambiar mapa':'Cargar mapa',showRoomMap,'ghost');
+    mapButton.id='room-map-settings';
     const rulesButton=button('Ajustes de partida',showRoomRules,'ghost');
     rulesButton.id='room-rules';
-    actions.prepend(rulesButton);
+    actions.prepend(mapButton,rulesButton);
     const start=button('Empezar partida',startMatch,'primary');
     start.id='host-start';
     start.disabled=!canStartRoom();
     actions.append(start);
   }
-  const preferred=ARENAS[voteResult(roster,profiles,arena)].name;
-  $('lobby-hint').textContent=(roster.length<2?'Comparte la sala para empezar.':canStartRoom()?'Todos listos.':'Todos deben marcarse como listos.')+' Pista: '+preferred+'.';
+  const hint=roster.length<2?'Comparte la sala para empezar.':waitingForMapSupport()?'Pide a tus invitados que actualicen el juego para jugar con este mapa.'
+    :canStartRoom()?'Todos listos.':'Todos deben marcarse como listos.';
+  $('lobby-hint').textContent=roomMap?hint:`${hint} Pista: ${ARENAS[voteResult(roster,profiles,arena)].name}.`;
   const rulesSummary=document.createElement('p');
   rulesSummary.id='room-rules-summary';
   rulesSummary.textContent=`Hasta ${settings.maxRounds} ${settings.maxRounds===1?'ronda':'rondas'} · `+(settings.resetEvery
@@ -1314,7 +1401,7 @@ function renderWork() {
 
 function syncUI() {
   const g=game, phase=g?.phase;
-  const key=JSON.stringify([mode,arena,self,roster,!g&&profiles,!g&&settings,!g&&roomCode,!g&&roomStatus,!g&&roomError,connectedToRoom,
+  const key=JSON.stringify([mode,arena,self,roster,!g&&profiles,!g&&settings,!g&&roomCode,!g&&roomStatus,!g&&roomError,connectedToRoom,roomMapRevision,waitingForMapSupport(),
     g?.match,g?.round,phase,g?.over,g?.finishedBuilding,g?.picks,g?.players.map(p=>[p.points,p.status,p.seal])]);
   const nextBuild=phase==='build'?g.match+'/'+g.round:'';
   if (buildKey!==nextBuild) {
@@ -1334,7 +1421,7 @@ function syncUI() {
     $('controls').hidden=!g||showingPodium;
     $('exit').hidden=mode==='menu';
     $('stage').classList.toggle('build',builder()!==undefined);
-    $('arena-label').textContent=ARENAS[g?.arena??arena].name;
+    $('arena-label').textContent=(g?gameArena(g).name:roomMap?.name)??ARENAS[arena].name;
     $('round-label').textContent=g?'RONDA '+g.round+' / '+(g.rules?.maxRounds??MAX_ROUNDS):'SALA EN LÍNEA';
     $('phase').textContent={draft:'SELECCIÓN',build:'CONSTRUCCIÓN',countdown:'PREPARACIÓN',race:'CARRERA',result:g?.over?'FIN DE PARTIDA':'RESULTADOS'}[phase]??'SALA P2P';
     const goal=g?.rules?.winPoints??MAX_SCORE;
@@ -1429,8 +1516,9 @@ function frame(now) {
     tone(game.event.sound);
   }
   const shownArena=game?.arena??(mode==='host'||connectedToRoom?voteResult(roster,profiles,arena):arena);
+  const shownMap=game?gameArena(game):roomMap?arenaFromMap(roomMap):ARENAS[shownArena];
   ctx.setTransform(1,0,0,1,0,0);
-  paintBackdrop(ctx,shownArena,canvas.width,canvas.height,now/1000);
+  paintBackdrop(ctx,shownArena,canvas.width,canvas.height,now/1000,shownMap);
   const {x,y,scale}=canvasView;
   ctx.setTransform(scale,0,0,scale,x,y);
   let view=mode==='guest'&&game?motion.view(game,now):game;
@@ -1438,7 +1526,7 @@ function frame(now) {
     const runner=guestMovement.view(game,self,now);
     if (runner) view={...view,players:view.players.map(p=>p.id===self?runner:p)};
   }
-  paint(ctx,view,shownArena,visiblePlacements(view),now/1000,self,false);
+  paint(ctx,view,shownArena,visiblePlacements(view),now/1000,self,false,shownMap);
   requestAnimationFrame(frame);
 }
 const roomParams=new URLSearchParams(location.search);

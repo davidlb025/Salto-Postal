@@ -39,3 +39,9 @@ Hay doce pistas: Dársena 07, Azotea Iris, Canal Neón, Fundición Ámbar, Anten
 - **Carrera.** Corre con A/D o las flechas. Salta con W, ↑ o espacio. En móviles y tablets, abre **Táctil** para elegir flechas o joystick. Puedes moverte y pulsar **Saltar** con otro dedo.
 - **Construcción táctil.** Toca o arrastra sobre el mapa para ajustar la vista previa. También puedes usar el mando elegido. Pulsa **Colocar** para confirmar. El juego recuerda el mando en ese navegador.
 - **Construcción con teclado.** Usa WASD o flechas y confirma con E o Enter.
+
+## Mapas personalizados
+
+Abre **Creador de mapas** en el menú. Puedes empezar en blanco, copiar una pista del juego o abrir un JSON exportado. Coloca plataformas con un clic o arrastra para definir su ancho. También puedes mover la salida, la meta y el sello, y elegir el fondo y la gravedad. Usa **Descargar mapa** para guardar el JSON y compartirlo.
+
+El anfitrión abre **Cargar mapa** en el lobby privado y selecciona el JSON. El mapa se comparte automáticamente con toda la sala. Desde ese mismo panel puedes editar la pista o quitarla para volver a la votación. En el editor abierto desde el lobby, **Usar en esta sala** aplica el mapa directamente.

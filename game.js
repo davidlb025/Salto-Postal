@@ -1,5 +1,6 @@
-export const WIDTH = 960;
-export const HEIGHT = 450;
+import { WIDTH, HEIGHT, arenaFromMap } from './map-data.js?v=10';
+
+export { WIDTH, HEIGHT };
 export const MAX_ROUNDS = 15;
 export const ROUND_LIMIT = 20;
 export const RESET_EVERY = 5;
@@ -86,6 +87,10 @@ export const ARENAS = [
   return {...arena,origin,destination,floor:[origin,...arena.ledges.map(row=>rect(...row,16)),destination,...extra.map(row=>rect(...row,16))],
     exit:rect(destination.x+destination.w-54,destination.y-53,39,53), token:rect(arena.seal[0]-9,arena.seal[1]-9,18,18)};
 });
+
+export function gameArena(g) {
+  return g.customMap?arenaFromMap(g.customMap):ARENAS[g.arena];
+}
 
 export function editProfile(profile,patch) {
   const next={...profile};
@@ -179,7 +184,7 @@ export function rankPlayers(players) {
   return ranked.map(player=>({id:player.id,rank:ranked.findIndex(other=>other.points===player.points)+1}));
 }
 
-export function newGame(ids,arena,profiles={},rules) {
+export function newGame(ids,arena,profiles={},rules,customMap=null) {
   const g={
     match:crypto.randomUUID?.() ?? String(Date.now()+Math.random()),
     players:ids.map(id=>({id,points:0,gain:0,connected:true,totalScore:totals(),
@@ -187,6 +192,7 @@ export function newGame(ids,arena,profiles={},rules) {
     phase:'draft', round:0, elapsed:0, deadline:0, placed:[], finishedBuilding:{}, previews:{}, finish:[],
     event:{id:0,sound:''}, events:[], result:'',
   };
+  if (customMap) g.customMap=customMap;
   nextRound(g);
   return g;
 }
@@ -211,7 +217,7 @@ function nextRound(g) {
     delete part.collapseAt;
     delete part.armedAt;
   }
-  const {origin}=ARENAS[g.arena];
+  const {origin}=gameArena(g);
   for (const [i,p] of g.players.entries()) {
     Object.assign(p,{x:origin.x+17+i*31,y:origin.y-30,w:20,h:30,vx:0,vy:0,face:1,ground:true,
       coyote:0,jumpBuffer:0,previous:0,inputSequence:0,surface:'',jumpSurface:'',surfaceFace:1,iceCarry:0,
@@ -292,7 +298,7 @@ function sweep(part) {
 
 export function canPlace(g,part) {
   if (part.kind==='trash') return !!trashTarget(g,part);
-  const {origin,destination,floor,token}=ARENAS[g.arena];
+  const {origin,destination,floor,token}=gameArena(g);
   const start=rect(origin.x-12,origin.y-80,origin.w+46,108);
   const end=rect(destination.x-15,destination.y-89,destination.w+43,114);
   if (part.x<-12||part.x+part.w>WIDTH-12||part.y<28||part.y+part.h>HEIGHT-22) return false;
@@ -406,7 +412,7 @@ function trapParts(part,time,solids) {
 
 export function raceSolids(g,time) {
   const supports=g.placed.filter(p=>PIECES[p.kind].type!=='Trampa'&&(p.collapseAt===undefined||time<p.collapseAt));
-  return [...ARENAS[g.arena].floor,...supports.map(p=>partPosition(p,time))];
+  return [...gameArena(g).floor,...supports.map(p=>partPosition(p,time))];
 }
 
 export function raceGeometry(g,time) {
@@ -491,7 +497,7 @@ export function advanceRunner(g,p,input,dt,time,solids,onEvent) {
     if (dx<0) p.x=box.x+box.w;
     p.vx=0;
   }
-  const map=ARENAS[g.arena];
+  const map=gameArena(g);
   p.vy=Math.min(660,p.vy+(map.gravity??1090)*dt);
   p.y+=p.vy*dt;
   p.ground=false;
@@ -531,7 +537,7 @@ function move(g,p,input,dt,solids,hazards) {
     emit(g,'hit',p);
     return;
   }
-  const map=ARENAS[g.arena];
+  const map=gameArena(g);
   if (!p.seal&&overlap(p,map.token)) {
     p.seal=true;
     emit(g,'seal',p);

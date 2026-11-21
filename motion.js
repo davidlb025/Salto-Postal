@@ -1,4 +1,4 @@
-import { advanceRunner, raceSolids, RACE_TICK } from './game.js?v=8';
+import { advanceRunner, raceSolids, RACE_TICK } from './game.js?v=10';
 
 const MIN_DELAY=64,MAX_DELAY=132;
 const TICK_MS=RACE_TICK*1000;
