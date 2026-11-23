@@ -1,7 +1,7 @@
 const drawings={
   saw(c) {
     c.save();
-    c.translate(18,12);
+    c.translate(12,12);
     c.beginPath();
     for (let i=0;i<32;i++) {
       const a=i*Math.PI/16;
@@ -66,7 +66,7 @@ function tile(kind) {
   if (!drawings[kind]) return null;
   if (!tiles.has(kind)) {
     const art=document.createElement('canvas');
-    art.width=36;
+    art.width=kind==='saw'?24:36;
     art.height=24;
     const ctx=art.getContext('2d');
     drawings[kind](ctx,(color,x,y,w,h)=>{

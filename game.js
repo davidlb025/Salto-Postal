@@ -203,6 +203,7 @@ function nextRound(g) {
   if (g.objectsReset) g.placed=[];
   g.resetVotes=[];
   g.round++;
+  delete g.raceEndedAt;
   g.phase='draft';
   g.elapsed=0;
   g.deadline=g.rules.pickTime;
@@ -220,7 +221,7 @@ function nextRound(g) {
   const {origin}=gameArena(g);
   for (const [i,p] of g.players.entries()) {
     Object.assign(p,{x:origin.x+17+i*31,y:origin.y-30,w:20,h:30,vx:0,vy:0,face:1,ground:true,
-      coyote:0,jumpBuffer:0,previous:0,inputSequence:0,surface:'',jumpSurface:'',surfaceFace:1,iceCarry:0,
+      coyote:0,jumpBuffer:0,previous:0,inputSequence:0,inputAt:0,inputJumps:0,surface:'',jumpSurface:'',surfaceFace:1,iceCarry:0,support:null,ferryDeparture:null,
       status:p.connected?'ready':'away',gain:0,score:totals(),seal:false});
   }
   if (!g.offer.length) closeDraft(g);
@@ -344,50 +345,106 @@ export function build(g,player,kind,x,y,face) {
   return true;
 }
 
+const movementRate={fan:2.5,ferry:1.8,saw:3.1,pendulum:2.25};
+const pistonStart=1.6,pistonSpeed=11;
+
 export function partPosition(part,time) {
-  if (part.kind==='fan'||part.kind==='ferry') {
-    const distance=part.kind==='fan'?36:30;
-    return {...part,x:part.x+Math.sin(time*(part.kind==='fan'?2.5:1.8))*distance};
+  const {kind}=part;
+  const phase=time*movementRate[kind];
+  if (kind==='fan'||kind==='ferry') {
+    return {...part,x:part.x+Math.sin(phase)*(kind==='fan'?36:30)};
   }
-  if (part.kind==='piston') {
+  if (kind==='piston') {
     const cycle=time%2.9;
-    const reach=cycle<1.6?0:Math.min(1,(cycle-1.6)*11,(2.9-cycle)*4)*64;
-    return {...part,y:part.y+reach,reach,warning:cycle>1.14&&cycle<1.6};
+    const reach=cycle<pistonStart?0:Math.min(1,(cycle-pistonStart)*pistonSpeed,(2.9-cycle)*4)*64;
+    return {...part,y:part.y+reach,reach,warning:cycle>1.14&&cycle<pistonStart};
   }
-  if (part.kind==='saw') return {...part,y:part.y+Math.sin(time*3.1)*32,railY:part.y};
-  if (part.kind==='pendulum') {
-    const angle=Math.sin(time*2.25)*.88;
+  if (kind==='saw') return {...part,y:part.y+Math.sin(phase)*32,railY:part.y};
+  if (kind==='pendulum') {
+    const angle=Math.sin(phase)*.88;
     return {...part,x:part.x+Math.sin(angle)*53,y:part.y+Math.cos(angle)*53,anchorX:part.x+part.w/2,anchorY:part.y};
   }
   return part;
 }
 
+const sparkStart=.76,sparkEnd=1.83,sparkSpeed=355,sparkHalf=6;
+
+function sparkPath(part,solids) {
+  const {face,x,y,w,h}=part;
+  const origin=x+w/2+face*18;
+  const top=y+h/2-5;
+  const height=10;
+  let travel=Math.min(2+(sparkEnd-sparkStart)*sparkSpeed,face===1?WIDTH-9-origin:origin-3);
+  let wall=Infinity;
+  for (const box of solids) {
+    if (top+height<=box.y||top>=box.y+box.h) continue;
+    if (face===1&&box.x+box.w>origin) {
+      wall=Math.min(wall,box.x-origin);
+      travel=Math.min(travel,box.x-origin-8);
+    } else if (face===-1&&box.x<origin+8) {
+      wall=Math.min(wall,origin-box.x-box.w);
+      travel=Math.min(travel,origin-box.x-box.w);
+    }
+  }
+  return {origin,top,height,travel,length:travel<2?0:Math.min(wall,travel+sparkHalf)};
+}
+
+function beamPath(part,solids) {
+  const {face,x,y,w,h}=part;
+  const origin=face===1?x+w:x;
+  const top=y+h*.42;
+  const height=7;
+  let length=175;
+  for (const box of solids) {
+    if (top+height<box.y||top>box.y+box.h) continue;
+    const distance=face===1?box.x-origin:origin-box.x-box.w;
+    if (distance>=0) length=Math.min(length,distance);
+  }
+  return {origin,top,height,length};
+}
+
+export function placementGuide(part,solids) {
+  if (part.kind==='laser'||part.kind==='emitter') {
+    const shot=part.kind==='laser'?beamPath(part,solids):sparkPath(part,solids);
+    const {origin,top,height}=shot;
+    const length=Math.min(shot.length,part.face===1?WIDTH-origin:origin);
+    if (length<=0) return null;
+    const y=top+height/2;
+    return {body:part,path:[[origin,y],[origin+part.face*length,y]]};
+  }
+  if (part.kind==='ferry'||part.kind==='piston') return null;
+  const rate=movementRate[part.kind];
+  if (!rate) return null;
+  const end=Math.PI/(2*rate);
+  const steps=part.kind==='pendulum'?16:1;
+  const path=Array.from({length:steps+1},(_,i)=>{
+    const box=partPosition(part,-end+2*end*i/steps);
+    return [box.x+box.w/2,box.y+box.h/2];
+  });
+  return {body:partPosition(part,0),path};
+}
+
+export function placementBody(part) {
+  const fullStroke=pistonStart+1/pistonSpeed;
+  return part.kind==='piston'?partPosition(part,fullStroke):part;
+}
+
 export function sparkPosition(part,time,solids) {
   const cycle=time%2.15;
-  const face=part.face;
-  const x=part.x+part.w/2+face*(20+(cycle-.76)*355);
-  const mouth=part.x+part.w/2+face*18;
-  const y=part.y+part.h/2-5;
-  if (cycle<.76||cycle>1.83||x<3||x>WIDTH-9) return null;
-  const lane=rect(Math.min(x,mouth),y,Math.abs(x-mouth)+8,10);
-  if (solids.some(box=>overlap(lane,box))) return null;
-  return {...rect(x-6,y,12,10),kind:'spark',owner:part.owner,face};
+  if (cycle<sparkStart||cycle>sparkEnd) return null;
+  const path=sparkPath(part,solids);
+  const travel=2+(cycle-sparkStart)*sparkSpeed;
+  if (travel>path.travel) return null;
+  const x=path.origin+part.face*travel;
+  return {...rect(x-sparkHalf,path.top,sparkHalf*2,path.height),kind:'spark',owner:part.owner,face:part.face};
 }
 
 function beamPosition(part,time,solids) {
   const cycle=time%2.8;
   if (cycle<1.12||cycle>2.11) return null;
-  const {face,owner}=part;
-  const origin=face===1?part.x+part.w:part.x;
-  const y=part.y+part.h*.42;
-  let length=175;
-  for (const box of solids) {
-    if (y+7<box.y||y>box.y+box.h) continue;
-    const distance=face===1?box.x-origin:origin-box.x-box.w;
-    if (distance>=0) length=Math.min(length,distance);
-  }
-  if (length<=0) return null;
-  return {...rect(face===1?origin:origin-length,y,length,7),kind:'ray',owner};
+  const {origin,top,height,length}=beamPath(part,solids);
+  if (!length) return null;
+  return {...rect(part.face===1?origin:origin-length,top,length,height),kind:'ray',owner:part.owner};
 }
 
 function trapParts(part,time,solids) {
@@ -411,14 +468,63 @@ function trapParts(part,time,solids) {
 }
 
 export function raceSolids(g,time) {
-  const supports=g.placed.filter(p=>PIECES[p.kind].type!=='Trampa'&&(p.collapseAt===undefined||time<p.collapseAt));
-  return [...gameArena(g).floor,...supports.map(p=>partPosition(p,time))];
+  const solids=[...gameArena(g).floor];
+  for (const [index,part] of g.placed.entries()) {
+    if (PIECES[part.kind].type==='Trampa'||(part.collapseAt!==undefined&&time>=part.collapseAt)) continue;
+    solids.push(part.kind==='ferry'?ferryPosition(g,index,time):partPosition(part,time));
+  }
+  return solids;
+}
+
+export function ferryPosition(g,index,time) {
+  const part=g.placed[index];
+  return part?.kind==='ferry'?{...partPosition(part,time),support:index}:null;
 }
 
 export function raceGeometry(g,time) {
   const solids=raceSolids(g,time);
   const traps=g.placed.filter(p=>PIECES[p.kind].type==='Trampa').map(part=>trapParts(part,time,solids));
   return {solids,hazards:traps.flatMap(trap=>trap.hazards),props:traps.flatMap(trap=>trap.props)};
+}
+
+function runnerHitbox(p) {
+  return rect(p.x+2,p.y+3,p.w-4,p.h-4);
+}
+
+function trapReach(part) {
+  if (part.kind!=='laser'&&part.kind!=='emitter') return sweep(part);
+  const {origin,top,height,length}=part.kind==='laser'?beamPath(part,[]):sparkPath(part,[]);
+  return rect(part.face===1?origin-6:origin-length,top,length+6,height);
+}
+
+export function runnerTouchesTrap(g,player,time,solids) {
+  const body=runnerHitbox(player);
+  return g.placed.some(part=>PIECES[part.kind].type==='Trampa'&&overlap(body,trapReach(part))&&
+    trapParts(part,time,solids).hazards.some(box=>overlap(body,box)));
+}
+
+export function runnerContacts(g,player) {
+  const {token,exit}=gameArena(g);
+  return {seal:overlap(player,token),exit:overlap(player,exit)};
+}
+
+export function runnerPredictionWeight(g,confirmed,predicted,predictedTime) {
+  const left=Math.min(confirmed.x,predicted.x),right=Math.max(confirmed.x,predicted.x)+confirmed.w;
+  const top=Math.min(confirmed.y,predicted.y),bottom=Math.max(confirmed.y,predicted.y)+confirmed.h;
+  const distance=box=>Math.max(left-box.x-box.w,box.x-right,top-box.y-box.h,box.y-bottom,0);
+  let clearance=Infinity;
+  let displaySolids,predictedSolids;
+  for (const part of g.placed) {
+    if (part.kind==='crumble'&&g.elapsed<part.collapseAt&&predictedTime>=part.collapseAt) {
+      clearance=Math.min(clearance,distance(part));
+    }
+    if (PIECES[part.kind].type!=='Trampa'||distance(trapReach(part))>=20) continue;
+    displaySolids??=raceSolids(g,g.elapsed);
+    predictedSolids??=raceSolids(g,predictedTime);
+    for (const hazard of trapParts(part,g.elapsed,displaySolids).hazards) clearance=Math.min(clearance,distance(hazard));
+    for (const hazard of trapParts(part,predictedTime,predictedSolids).hazards) clearance=Math.min(clearance,distance(hazard));
+  }
+  return Math.min(1,Math.max(0,(clearance-2)/18));
 }
 
 export function disconnect(g,id) {
@@ -448,6 +554,7 @@ function tally(g) {
     p.points+=p.gain;
     for (const key of Object.keys(p.score)) p.totalScore[key]+=p.score[key];
   }
+  g.raceEndedAt=g.elapsed;
   g.phase='result';
   g.elapsed=0;
   const best=Math.max(0,...current.map(p=>p.points));
@@ -463,6 +570,7 @@ function tally(g) {
 }
 
 export function advanceRunner(g,p,input,dt,time,solids,onEvent) {
+  const previousFerry=p.ground&&p.surface==='ferry'?p.support:null;
   const steer=Number(Boolean(input&2))-Number(Boolean(input&1));
   if (steer) p.face=steer;
   const target=steer*(p.surface==='gel'?112:255)*(g.rules?.speed??100)/100;
@@ -472,12 +580,15 @@ export function advanceRunner(g,p,input,dt,time,solids,onEvent) {
   const acceleration=(onIce?grip:p.ground?(steer?3150:4200):(steer?2250:2800))*dt;
   p.iceCarry=onIce?Math.max(0,p.iceCarry-dt):0;
   p.vx+=Math.max(-acceleration,Math.min(acceleration,target-p.vx));
-  const carrying=p.ground&&g.placed.find(part=>{
-    if (part.kind!=='ferry') return false;
-    const before=partPosition(part,time-dt);
-    return Math.abs(p.y+p.h-before.y)<.1&&p.x+p.w>before.x&&p.x<before.x+before.w;
-  });
-  const ride=carrying?partPosition(carrying,time).x-partPosition(carrying,time-dt).x:0;
+  let ride=0;
+  if (p.ground&&p.surface==='ferry') {
+    const before=ferryPosition(g,p.support,time-dt)??solids.map(box=>ferryPosition(g,box.support,time-dt))
+      .find(box=>box&&Math.abs(p.y+p.h-box.y)<.1&&p.x+p.w>box.x&&p.x<box.x+box.w);
+    if (before) {
+      p.y=before.y-p.h;
+      ride=ferryPosition(g,before.support,time).x-before.x;
+    }
+  }
   p.coyote=p.ground?.105:Math.max(0,p.coyote-dt);
   const jumpPressed=(input&8)||((input&4)&&!(p.previous&4));
   p.jumpBuffer=jumpPressed?.12:Math.max(0,p.jumpBuffer-dt);
@@ -502,6 +613,7 @@ export function advanceRunner(g,p,input,dt,time,solids,onEvent) {
   p.y+=p.vy*dt;
   p.ground=false;
   p.surface='';
+  p.support=null;
   for (const box of solids) {
     if (!overlap(p,box)) continue;
     if (p.vy>0) {
@@ -516,12 +628,15 @@ export function advanceRunner(g,p,input,dt,time,solids,onEvent) {
       }
       p.ground=true;
       p.surface=box.kind??'';
+      p.support=box.support??null;
       p.jumpSurface=p.surface;
       if (p.surface==='ice'&&!onIce&&Math.abs(p.vx)>1) p.iceCarry=.13;
       p.surfaceFace=box.face??1;
     } else if (p.vy<0) p.y=box.y+box.h;
     p.vy=0;
   }
+  if (p.ground) p.ferryDeparture=null;
+  else if (Number.isInteger(previousFerry)) p.ferryDeparture=[previousFerry,time];
 }
 
 function move(g,p,input,dt,solids,hazards) {
@@ -529,7 +644,7 @@ function move(g,p,input,dt,solids,hazards) {
     if (sound==='crack') source.collapseAt=g.elapsed+.58;
     emit(g,sound,source);
   });
-  const hit=hazards.find(box=>overlap({...p,x:p.x+2,y:p.y+3,w:p.w-4,h:p.h-4},box));
+  const hit=hazards.find(box=>overlap(runnerHitbox(p),box));
   if (hit||p.y>HEIGHT+40) {
     p.status='out';
     const owner=hit&&g.players.find(other=>other.id===hit.owner&&other.id!==p.id&&other.connected);
@@ -537,12 +652,12 @@ function move(g,p,input,dt,solids,hazards) {
     emit(g,'hit',p);
     return;
   }
-  const map=gameArena(g);
-  if (!p.seal&&overlap(p,map.token)) {
+  const contact=runnerContacts(g,p);
+  if (!p.seal&&contact.seal) {
     p.seal=true;
     emit(g,'seal',p);
   }
-  if (overlap(p,map.exit)) {
+  if (contact.exit) {
     p.status='done';
     g.finish.push(p.id);
     emit(g,'finish',p);

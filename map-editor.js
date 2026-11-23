@@ -1,6 +1,6 @@
-import { ARENAS } from './game.js?v=10';
+import { ARENAS } from './game.js?v=22';
 import { WIDTH, HEIGHT, MAX_PLATFORMS, blankMap, mapFromArena, arenaFromMap, readMap, readMapFile, downloadMap } from './map-data.js?v=10';
-import { paintArena } from './render.js?v=10';
+import { paintArena } from './render.js?v=22';
 
 const tools={
   platform:['Plataforma','Pulsa para colocar un tramo o arrastra de lado a lado para dibujar su ancho.'],

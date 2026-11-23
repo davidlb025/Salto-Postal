@@ -61,7 +61,7 @@ function motionTransport(pc,receive) {
     if (typeof event.data!=='string'||event.data.length>8192) return;
     let packet;
     try { packet=JSON.parse(event.data); } catch { return; }
-    if (packet?.type==='motion'||packet?.type==='preview') receive(packet);
+    if (packet?.type==='motion'||packet?.type==='preview'||packet?.type==='input') receive(packet);
   });
   return channel;
 }
@@ -80,6 +80,7 @@ export function createLink(id, onOpen, onDrop, onMessage) {
   let channel,motion,closed=false;
   const link = {
     id, open:false,
+    get motionBufferedAmount() { return motion?.readyState==='open'?motion.bufferedAmount:undefined; },
     close() { drop(); },
     send(message) {
       if (channel?.readyState==='open') {
@@ -87,6 +88,10 @@ export function createLink(id, onOpen, onDrop, onMessage) {
       }
     },
     sendMotion(packet) { sendMotion(motion,channel,packet,message=>link.send(message)); },
+    sendFastInput(packet) { if (motion?.readyState==='open') link.sendMotion(packet); },
+    sendExtraMotion(packet) {
+      if (motion?.readyState==='open'&&motion.bufferedAmount===0) link.sendMotion(packet);
+    },
     async invite() {
       bind(pc.createDataChannel('salto-postal'));
       await pc.setLocalDescription(await pc.createOffer());
@@ -170,6 +175,15 @@ export function peerLink(connection,id,onOpen,onDrop,onMessage) {
       try { connection.send(message); } catch { drop(); }
     },
     sendMotion(packet) { sendMotion(motion,connection.dataChannel,packet,message=>link.send(message)); },
+    sendFastInput(packet) {
+      if (connection.sendFastInput) connection.sendFastInput(packet);
+      else if (motion?.readyState==='open') link.sendMotion(packet);
+    },
+    sendExtraMotion(packet) {
+      if (connection.sendExtraMotion) { connection.sendExtraMotion(packet); return; }
+      const channel=motion?.readyState==='open'?motion:!pc?connection.dataChannel:null;
+      if (channel?.bufferedAmount===0) link.sendMotion(packet);
+    },
   };
   function drop(reason) {
     if (closed) return;

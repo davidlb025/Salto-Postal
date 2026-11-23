@@ -1,5 +1,5 @@
-import { ARENAS, COURIERS, avatar, DIRECTIONAL, WIDTH, HEIGHT, raceGeometry, showSeal, gameArena } from './game.js?v=10';
-import { drawProp } from './props.js';
+import { ARENAS, COURIERS, avatar, DIRECTIONAL, WIDTH, HEIGHT, raceGeometry, raceSolids, showSeal, gameArena, placementGuide, placementBody } from './game.js?v=22';
+import { drawProp } from './props.js?v=11';
 
 const images=Object.fromEntries([
   'port','door','seal','spark','parcel','beam','spring','spike','fan','piston','emitter','ferry','crumble','ice','trash',...COURIERS.map(p=>p.sprite),
@@ -285,22 +285,22 @@ function pose(ctx,sprite,width,run,stride,rising) {
   ctx.drawImage(img,0,0,iw,hip+1,Math.round(-width/2),-38,width,bodyHeight+2);
 }
 
-function figure(ctx,p,t) {
+function figure(ctx,p,t,cue=null) {
   if (p.status==='out'||p.status==='away') return;
   const courier=avatar(p);
   const run=p.ground&&Math.abs(p.vx)>25;
   const cadence=7+Math.abs(p.vx||0)*.031;
   const stride=run?Math.sin(Math.floor(t*cadence*2)*.92+p.id):0;
   const breath=.025*Math.sin(t*4+p.id);
-  const tilt=p.ground?stride*.12:Math.max(-.16,Math.min(.16,p.vy/1700));
-  const squash=p.ground?breath-Math.abs(stride)*.08:p.vy<0?.12:-.04;
+  const tilt=p.ground?stride*.12+(cue?.steer ? .08 : 0):Math.max(-.16,Math.min(.16,p.vy/1700));
+  const squash=p.ground?breath-Math.abs(stride)*.08-(cue?.crouch??0):p.vy<0?.12:-.04;
   ctx.save();
   ctx.translate(Math.round(p.x+p.w/2),Math.round(p.y+p.h));
   if (p.ground) {
     ctx.fillStyle='#131929aa';
     ctx.fillRect(-13,0,26,3);
   }
-  ctx.scale(p.face||1,1);
+  ctx.scale(cue?.steer||p.face||1,1);
   if (!reduced.matches) {
     ctx.rotate(tilt);
     ctx.scale(1-squash*.6,1+squash);
@@ -362,7 +362,7 @@ function machine(ctx,box,t,elapsed) {
       ctx.fillRect(x+w/2-4,y-5,8,3);
     }
   } else {
-    const shake=kind==='crumble'&&box.collapseAt!==undefined&&!reduced.matches?Math.sin(t*72)*2:0;
+    const shake=kind==='crumble'&&elapsed>=box.collapseAt-.58&&!reduced.matches?Math.sin(t*72)*2:0;
     flipped(ctx,kind,{...box,x:x+shake});
     if (kind==='emitter') {
       ctx.fillStyle=elapsed%2.15>.39&&elapsed%2.15<.76?'#f7b6ff':'#957adb';
@@ -485,21 +485,26 @@ export function paintArena(ctx,map,t=0,drawWorld=true,showToken=false) {
   if (showToken) paintToken(ctx,map,t);
 }
 
-export function paint(ctx,g,arenaIndex,previews,time,viewer=null,drawWorld=true,map=g?gameArena(g):ARENAS[arenaIndex]) {
+export function paint(ctx,g,arenaIndex,previews,time,viewer=null,drawWorld=true,map=g?gameArena(g):ARENAS[arenaIndex],feedback=null) {
   const t=reduced.matches?0:time;
+  const raceTime=reduced.matches?0:g?.elapsed;
   paintArena(ctx,map,t,drawWorld,!g&&map!==ARENAS[arenaIndex]);
 
   if (g) {
     if (g.phase==='race') {
       const {solids,hazards,props}=raceGeometry(g,g.elapsed);
-      for (const box of [...solids,...props,...hazards]) if (box.kind) machine(ctx,box,t,g.elapsed);
+      for (const box of [...solids,...props,...hazards]) if (box.kind) machine(ctx,box,raceTime,g.elapsed);
     } else {
       for (const part of g.placed) {
         if (g.phase!=='result'||part.collapseAt===undefined) machine(ctx,part,t,0);
       }
     }
-    if (showSeal(g,viewer)) paintToken(ctx,map,t);
-    for (const p of g.players) figure(ctx,p,t);
+    if (showSeal(g,viewer)&&!feedback?.previewSeal) paintToken(ctx,map,t);
+    for (const p of g.players) {
+      const cue=p.id===viewer&&p.status==='running'?feedback:null;
+      const pose=cue?.pose;
+      figure(ctx,pose?{...p,...pose}:p,g.phase==='race'?raceTime:t,pose?null:cue);
+    }
     bursts(ctx,g,time);
   } else if (map===ARENAS[arenaIndex]) {
     const a=map.floor[3], b=map.floor[4];
@@ -507,23 +512,47 @@ export function paint(ctx,g,arenaIndex,previews,time,viewer=null,drawWorld=true,
     figure(ctx,{id:1,x:b.x+18,y:b.y-30,w:20,h:30,ground:true,face:-1,vx:40},t+.4);
     image(ctx,'parcel',b.x-30,b.y-36+Math.sin(t*3)*4,17,17);
   }
+  const guideSolids=previews?.some(({part})=>part.kind==='laser'||part.kind==='emitter')?raceSolids(g,0):[];
   for (const {part,valid,own,target} of previews??[]) {
+    const color=COURIERS[part.owner].color;
+    const outline=valid?(own?'#b7f698':color):'#ff796f';
+    const movement=placementGuide(part,guideSolids);
+    const body=movement?.body??placementBody(part);
+    const horizontal=part.kind==='fan';
+    const vertical=part.kind==='saw';
     if (target) {
       ctx.strokeStyle='#ffcc80';
       ctx.lineWidth=3;
       ctx.strokeRect(target.x-3,target.y-3,target.w+6,target.h+6);
     }
+    if (movement) {
+      const path=movement.path.map(([x,y])=>[x+(vertical?part.w/2+7:0),y-(horizontal?part.h/2+8:0)]);
+      ctx.save();
+      ctx.globalAlpha=own?1:.65;
+      ctx.beginPath();
+      ctx.moveTo(...path[0]);
+      for (const point of path.slice(1)) ctx.lineTo(...point);
+      ctx.strokeStyle='#282239';
+      ctx.lineWidth=4;
+      ctx.stroke();
+      ctx.strokeStyle=outline;
+      ctx.lineWidth=2;
+      ctx.setLineDash([4,4]);
+      ctx.stroke();
+      ctx.fillStyle=outline;
+      for (const [x,y] of [path[0],path.at(-1)]) ctx.fillRect(x-2,y-2,4,4);
+      ctx.restore();
+    }
     ctx.globalAlpha=own?.82:.48;
-    machine(ctx,part,0,0);
+    machine(ctx,body,0,0);
     ctx.globalAlpha=1;
-    const color=COURIERS[part.owner].color;
-    ctx.strokeStyle=valid?(own?'#b7f698':color):'#ff796f';
+    ctx.strokeStyle=outline;
     ctx.lineWidth=2;
-    ctx.strokeRect(part.x-.5,part.y-.5,part.w+1,part.h+1);
+    ctx.strokeRect(body.x-.5,body.y-.5,body.w+1,body.h+1);
     ctx.fillStyle=color;
     ctx.font='bold 9px monospace';
-    ctx.fillText('P'+(part.owner+1),part.x,part.y-5);
-    if (DIRECTIONAL.has(part.kind)) {
+    ctx.fillText('P'+(part.owner+1),part.x,part.y-(horizontal?15:5));
+    if (DIRECTIONAL.has(part.kind)&&!movement) {
       ctx.fillStyle=ctx.strokeStyle;
       ctx.font='bold 19px monospace';
       ctx.fillText(part.face===1?'→':'←',part.face===1?part.x+part.w+5:part.x-17,part.y+part.h*.7);
