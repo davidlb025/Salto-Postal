@@ -45,8 +45,12 @@ let sentPreview='',sentPreviewAt=0,canvasView={scale:1,x:0,y:0};
 let roomSession=null,roomCode='',hostedManually=false;
 let roomMap=null,roomMapKey='',roomMapRevision=0;
 let mode='menu', game=null, arena=0, self=0, roster=[0];
-let muted=false,audio,lastEvent=0,lastFrame=performance.now();
-let uiKey='', buildKey='', draftKey='', dialogPage='', pending=null, hostLink=null, countText='', lastTimeline;
+const effects=new Map([
+  'pick','place','scrap','reject','start','go','jump','spring',
+  'crack','arm','hit','seal','finish','round','fail','podium',
+].map(kind=>[kind,null]));
+let muted=false,audio,soundGain,soundMatch,soundPhase,lastEvent=0,lastFrame=performance.now();
+let uiKey='', buildKey='', draftKey='', dialogPage='', pending=null, hostLink=null, countText='';
 
 const button = (label, action, cls='secondary')=>{
   const node=document.createElement('button');
@@ -56,35 +60,55 @@ const button = (label, action, cls='secondary')=>{
   return node;
 };
 
-function tone(kind) {
-  if (!audio || muted || audio.state!=='running') return;
-  const notes={
-    pick:[475,605], place:[360,560], jump:[230,360], spring:[305,680], hit:[155,70],
-    start:[453,660], go:[453,660,906], finish:[440,555,740], podium:[523,659,784,1047], fail:[190,120],
-    seal:[440,620,910], crack:[210,155], arm:[310,445], scrap:[320,440,590],
-  }[kind];
-  if (!notes) return;
-  notes.forEach((frequency,i)=>{
-    const at=audio.currentTime+i*.048, osc=audio.createOscillator(), gain=audio.createGain();
-    osc.type='triangle';
-    osc.frequency.value=frequency;
-    gain.gain.setValueAtTime(.045,at);
-    gain.gain.exponentialRampToValueAtTime(.001,at+.09);
-    osc.connect(gain).connect(audio.destination);
-    osc.start(at);
-    osc.stop(at+.1);
+function loadEffect(kind) {
+  const cached=effects.get(kind);
+  if (cached) return cached;
+  const pending=fetch(new URL(`./assets/sfx/${kind}.mp3`,import.meta.url))
+    .then(response=>{
+      if (!response.ok) throw new Error(`Sound ${kind}: ${response.status}`);
+      return response.arrayBuffer();
+    })
+    .then(bytes=>audio.decodeAudioData(bytes))
+    .catch(()=>{
+      effects.set(kind,null);
+      return null;
+    });
+  effects.set(kind,pending);
+  return pending;
+}
+
+function playEffect(kind) {
+  if (!audio||muted||audio.state!=='running'||!effects.has(kind)) return;
+  const requestedAt=performance.now();
+  loadEffect(kind).then(buffer=>{
+    if (!buffer||muted||audio.state!=='running'||performance.now()-requestedAt>250) return;
+    const source=audio.createBufferSource();
+    source.buffer=buffer;
+    source.connect(soundGain);
+    source.start();
   });
 }
+
 function enableAudio() {
   if (muted) return;
-  if (!audio && globalThis.AudioContext) audio=new AudioContext();
-  audio?.resume().catch(()=>{});
+  const AudioEngine=globalThis.AudioContext??globalThis.webkitAudioContext;
+  if (!AudioEngine) return;
+  if (!audio) {
+    audio=new AudioEngine();
+    soundGain=audio.createGain();
+    soundGain.gain.value=.7;
+    soundGain.connect(audio.destination);
+    for (const kind of effects.keys()) loadEffect(kind);
+  }
+  if (audio.state!=='running') audio.resume().catch(()=>{});
 }
 window.addEventListener('pointerdown',enableAudio);
 window.addEventListener('keydown',enableAudio);
 $('sound').onclick=()=>{
   muted=!muted;
   $('sound').setAttribute('aria-pressed',String(!muted));
+  if (soundGain) soundGain.gain.value=muted?0:.7;
+  if (!muted) enableAudio();
 };
 
 const disclosures=[$('match-details'),$('game-options')];
@@ -762,7 +786,7 @@ function receiveGuest(link,message) {
     game=next;
     return;
   }
-  if (message.type==='claimed'||message.type==='blocked') tone('fail');
+  if (message.type==='claimed'||message.type==='blocked') playEffect('reject');
   if (!game||message.match!==game.match||message.round!==game.round) return;
   const now=performance.now();
   if (message.type==='runner-clock'&&game.phase==='countdown'&&Number.isFinite(game.raceStartsAt)&&Number.isFinite(message.now)) {
@@ -1018,7 +1042,7 @@ function confirmPlacement(id) {
   else if (preview) {
     const message=preview.part.kind==='trash'?'Apunta a una pieza para borrarla.':'La pieza no cabe aquí. Prueba otro lugar.';
     $('placement-status').textContent=message;
-    tone('fail');
+    playEffect('reject');
   }
 }
 
@@ -1713,19 +1737,23 @@ function frame(now) {
     nextClockProbe=now+250;
     hostLink.send({type:'runner-clock',match:game.match,round:game.round,sent:performance.now()});
   }
-  const timeline=view&&[view.match,view.round,view.phase==='race'||view.phase==='result'?view.phase:'setup'].join('/');
-  if (timeline!==lastTimeline) {
-    lastTimeline=timeline;
+  if (view?.match!==soundMatch) {
+    soundMatch=view?.match;
+    soundPhase=undefined;
     lastEvent=(view?.event.id??1)-1;
   }
-  if (view?.phase==='race') {
+  if (view) {
+    if (view.phase==='race'&&soundPhase!=='race') {
+      const go=view.events.findLast(event=>event.sound==='go');
+      if (go) lastEvent=go.id-1;
+    } else if (view.phase==='result'&&soundPhase!=='result') {
+      lastEvent=view.event.id-1;
+    }
+    soundPhase=view.phase;
     for (const event of view.events) if (event.id>lastEvent) {
       lastEvent=event.id;
-      tone(event.sound);
+      playEffect(view.phase==='result'&&event.sound==='finish'?'round':event.sound);
     }
-  } else if (view&&view.event.id>lastEvent) {
-    lastEvent=view.event.id;
-    tone(view.event.sound);
   }
   const shownArena=game?.arena??(mode==='host'||connectedToRoom?voteResult(roster,profiles,arena):arena);
   const shownMap=game?gameArena(game):roomMap?arenaFromMap(roomMap):ARENAS[shownArena];
