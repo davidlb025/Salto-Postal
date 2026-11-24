@@ -1,4 +1,4 @@
-import { ARENAS, COURIERS, avatar, DIRECTIONAL, WIDTH, HEIGHT, raceGeometry, raceSolids, showSeal, gameArena, placementGuide, placementBody } from './game.js?v=22';
+import { ARENAS, COURIERS, avatar, DIRECTIONAL, WIDTH, HEIGHT, raceGeometry, raceSolids, showSeal, gameArena, placementGuide, placementBody } from './game.js?v=24';
 import { drawProp } from './props.js?v=11';
 
 const images=Object.fromEntries([
@@ -26,7 +26,7 @@ const reduced=matchMedia('(prefers-reduced-motion: reduce)');
 const skies=new Map();
 const portLayers=new Map();
 const effects=[];
-let visualMatch, visualEvent=0;
+let visualRound, visualEvent=0;
 
 function image(ctx,key,x,y,w,h) {
   if (drawProp(ctx,key,x,y,w,h)) return;
@@ -285,22 +285,23 @@ function pose(ctx,sprite,width,run,stride,rising) {
   ctx.drawImage(img,0,0,iw,hip+1,Math.round(-width/2),-38,width,bodyHeight+2);
 }
 
-function figure(ctx,p,t,cue=null) {
+function figure(ctx,p,t,racing=false) {
   if (p.status==='out'||p.status==='away') return;
   const courier=avatar(p);
   const run=p.ground&&Math.abs(p.vx)>25;
   const cadence=7+Math.abs(p.vx||0)*.031;
   const stride=run?Math.sin(Math.floor(t*cadence*2)*.92+p.id):0;
   const breath=.025*Math.sin(t*4+p.id);
-  const tilt=p.ground?stride*.12+(cue?.steer ? .08 : 0):Math.max(-.16,Math.min(.16,p.vy/1700));
-  const squash=p.ground?breath-Math.abs(stride)*.08-(cue?.crouch??0):p.vy<0?.12:-.04;
+  const tilt=p.ground?stride*.12:Math.max(-.16,Math.min(.16,p.vy/1700));
+  const squash=p.ground?breath-Math.abs(stride)*.08:p.vy<0?.12:-.04;
   ctx.save();
-  ctx.translate(Math.round(p.x+p.w/2),Math.round(p.y+p.h));
+  const x=p.x+p.w/2,y=p.y+p.h;
+  ctx.translate(racing?x:Math.round(x),racing?y:Math.round(y));
   if (p.ground) {
     ctx.fillStyle='#131929aa';
     ctx.fillRect(-13,0,26,3);
   }
-  ctx.scale(cue?.steer||p.face||1,1);
+  ctx.scale(p.face||1,1);
   if (!reduced.matches) {
     ctx.rotate(tilt);
     ctx.scale(1-squash*.6,1+squash);
@@ -425,9 +426,10 @@ function hazardEffect(ctx,{kind,x,y,w,h},time) {
 }
 
 function bursts(ctx,g,now) {
-  if (visualMatch!==g?.match) {
-    visualMatch=g?.match;
-    visualEvent=0;
+  const round=g&&g.match+'/'+g.round;
+  if (visualRound!==round) {
+    visualRound=round;
+    visualEvent=(g?.event.id??1)-1;
     effects.length=0;
   }
   if (!g) return;
@@ -485,7 +487,7 @@ export function paintArena(ctx,map,t=0,drawWorld=true,showToken=false) {
   if (showToken) paintToken(ctx,map,t);
 }
 
-export function paint(ctx,g,arenaIndex,previews,time,viewer=null,drawWorld=true,map=g?gameArena(g):ARENAS[arenaIndex],feedback=null) {
+export function paint(ctx,g,arenaIndex,previews,time,viewer=null,drawWorld=true,map=g?gameArena(g):ARENAS[arenaIndex]) {
   const t=reduced.matches?0:time;
   const raceTime=reduced.matches?0:g?.elapsed;
   paintArena(ctx,map,t,drawWorld,!g&&map!==ARENAS[arenaIndex]);
@@ -499,12 +501,9 @@ export function paint(ctx,g,arenaIndex,previews,time,viewer=null,drawWorld=true,
         if (g.phase!=='result'||part.collapseAt===undefined) machine(ctx,part,t,0);
       }
     }
-    if (showSeal(g,viewer)&&!feedback?.previewSeal) paintToken(ctx,map,t);
-    for (const p of g.players) {
-      const cue=p.id===viewer&&p.status==='running'?feedback:null;
-      const pose=cue?.pose;
-      figure(ctx,pose?{...p,...pose}:p,g.phase==='race'?raceTime:t,pose?null:cue);
-    }
+    if (showSeal(g,viewer)) paintToken(ctx,map,t);
+    const racing=g.phase==='race';
+    for (const p of g.players) figure(ctx,p,racing?raceTime:t,racing);
     bursts(ctx,g,time);
   } else if (map===ARENAS[arenaIndex]) {
     const a=map.floor[3], b=map.floor[4];

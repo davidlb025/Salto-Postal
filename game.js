@@ -12,6 +12,7 @@ export const MAX_PLAYERS = 4;
 export const PICK_SECONDS = { min:5, max:60, default:13 };
 export const RACE_SECONDS = { min:10, max:120, default:30 };
 export const RACE_TICK = 1/120;
+const CRUMBLE_DELAY=.58;
 
 export const COURIERS = [
   { name:'Brasa', species:'Zorro', color:'#ffb270', sprite:'fox' },
@@ -204,6 +205,7 @@ function nextRound(g) {
   g.resetVotes=[];
   g.round++;
   delete g.raceEndedAt;
+  delete g.raceStartsAt;
   g.phase='draft';
   g.elapsed=0;
   g.deadline=g.rules.pickTime;
@@ -221,8 +223,8 @@ function nextRound(g) {
   const {origin}=gameArena(g);
   for (const [i,p] of g.players.entries()) {
     Object.assign(p,{x:origin.x+17+i*31,y:origin.y-30,w:20,h:30,vx:0,vy:0,face:1,ground:true,
-      coyote:0,jumpBuffer:0,previous:0,inputSequence:0,inputAt:0,inputJumps:0,surface:'',jumpSurface:'',surfaceFace:1,iceCarry:0,support:null,ferryDeparture:null,
-      status:p.connected?'ready':'away',gain:0,score:totals(),seal:false});
+      coyote:0,jumpBuffer:0,previous:0,surface:'',jumpSurface:'',surfaceFace:1,iceCarry:0,support:null,
+      status:p.connected?'ready':'away',gain:0,score:totals(),seal:false,endedAt:null,hitTrap:null,outcome:null});
   }
   if (!g.offer.length) closeDraft(g);
 }
@@ -483,48 +485,18 @@ export function ferryPosition(g,index,time) {
 
 export function raceGeometry(g,time) {
   const solids=raceSolids(g,time);
-  const traps=g.placed.filter(p=>PIECES[p.kind].type==='Trampa').map(part=>trapParts(part,time,solids));
-  return {solids,hazards:traps.flatMap(trap=>trap.hazards),props:traps.flatMap(trap=>trap.props)};
+  const hazards=[],props=[];
+  for (const [index,part] of g.placed.entries()) {
+    if (PIECES[part.kind].type!=='Trampa') continue;
+    const trap=trapParts(part,time,solids);
+    hazards.push(...trap.hazards.map(box=>({...box,trap:index})));
+    props.push(...trap.props);
+  }
+  return {solids,hazards,props};
 }
 
 function runnerHitbox(p) {
   return rect(p.x+2,p.y+3,p.w-4,p.h-4);
-}
-
-function trapReach(part) {
-  if (part.kind!=='laser'&&part.kind!=='emitter') return sweep(part);
-  const {origin,top,height,length}=part.kind==='laser'?beamPath(part,[]):sparkPath(part,[]);
-  return rect(part.face===1?origin-6:origin-length,top,length+6,height);
-}
-
-export function runnerTouchesTrap(g,player,time,solids) {
-  const body=runnerHitbox(player);
-  return g.placed.some(part=>PIECES[part.kind].type==='Trampa'&&overlap(body,trapReach(part))&&
-    trapParts(part,time,solids).hazards.some(box=>overlap(body,box)));
-}
-
-export function runnerContacts(g,player) {
-  const {token,exit}=gameArena(g);
-  return {seal:overlap(player,token),exit:overlap(player,exit)};
-}
-
-export function runnerPredictionWeight(g,confirmed,predicted,predictedTime) {
-  const left=Math.min(confirmed.x,predicted.x),right=Math.max(confirmed.x,predicted.x)+confirmed.w;
-  const top=Math.min(confirmed.y,predicted.y),bottom=Math.max(confirmed.y,predicted.y)+confirmed.h;
-  const distance=box=>Math.max(left-box.x-box.w,box.x-right,top-box.y-box.h,box.y-bottom,0);
-  let clearance=Infinity;
-  let displaySolids,predictedSolids;
-  for (const part of g.placed) {
-    if (part.kind==='crumble'&&g.elapsed<part.collapseAt&&predictedTime>=part.collapseAt) {
-      clearance=Math.min(clearance,distance(part));
-    }
-    if (PIECES[part.kind].type!=='Trampa'||distance(trapReach(part))>=20) continue;
-    displaySolids??=raceSolids(g,g.elapsed);
-    predictedSolids??=raceSolids(g,predictedTime);
-    for (const hazard of trapParts(part,g.elapsed,displaySolids).hazards) clearance=Math.min(clearance,distance(hazard));
-    for (const hazard of trapParts(part,predictedTime,predictedSolids).hazards) clearance=Math.min(clearance,distance(hazard));
-  }
-  return Math.min(1,Math.max(0,(clearance-2)/18));
 }
 
 export function disconnect(g,id) {
@@ -540,9 +512,16 @@ export function disconnect(g,id) {
   }
 }
 
-function tally(g) {
+export function finishRace(g) {
   const current=active(g);
-  const finish=g.finish.filter(id=>current.some(p=>p.id===id));
+  for (const p of current) if (p.status==='running') settleRunner(g,p,'timeout',g.deadline);
+  const finish=current.filter(p=>p.status==='done').sort((a,b)=>a.endedAt-b.endedAt||a.id-b.id).map(p=>p.id);
+  g.finish=finish;
+  for (const victim of g.players) {
+    const part=g.placed[victim.hitTrap];
+    const owner=part&&current.find(p=>p.id===part.owner&&p.id!==victim.id);
+    if (owner) owner.score.trap++;
+  }
   const contested=finish.length<current.length;
   for (const p of current) {
     if (finish.includes(p.id)) {
@@ -569,8 +548,7 @@ function tally(g) {
   emit(g,g.over?'podium':finish.length?'finish':'fail');
 }
 
-export function advanceRunner(g,p,input,dt,time,solids,onEvent) {
-  const previousFerry=p.ground&&p.surface==='ferry'?p.support:null;
+function advanceRunner(g,p,input,dt,time,solids,onEvent) {
   const steer=Number(Boolean(input&2))-Number(Boolean(input&1));
   if (steer) p.face=steer;
   const target=steer*(p.surface==='gel'?112:255)*(g.rules?.speed??100)/100;
@@ -623,7 +601,7 @@ export function advanceRunner(g,p,input,dt,time,solids,onEvent) {
         onEvent?.('spring',p);
         break;
       }
-      if (box.kind==='crumble'&&box.collapseAt===undefined) {
+      if (box.kind==='crumble'&&time+CRUMBLE_DELAY<(box.collapseAt??Infinity)) {
         onEvent?.('crack',box);
       }
       p.ground=true;
@@ -635,33 +613,64 @@ export function advanceRunner(g,p,input,dt,time,solids,onEvent) {
     } else if (p.vy<0) p.y=box.y+box.h;
     p.vy=0;
   }
-  if (p.ground) p.ferryDeparture=null;
-  else if (Number.isInteger(previousFerry)) p.ferryDeparture=[previousFerry,time];
 }
 
-function move(g,p,input,dt,solids,hazards) {
-  advanceRunner(g,p,input,dt,g.elapsed,solids,(sound,source)=>{
-    if (sound==='crack') source.collapseAt=g.elapsed+.58;
-    emit(g,sound,source);
+export function beginRace(g) {
+  g.phase='race';
+  g.elapsed=0;
+  g.deadline=g.rules.raceTime;
+  for (const p of active(g)) p.status='running';
+  emit(g,'go');
+}
+
+export function triggerRacePiece(g,index,at) {
+  const part=g.placed[index];
+  const timing=part?.kind==='mine'?['armedAt',at,'arm']:part?.kind==='crumble'?['collapseAt',at+CRUMBLE_DELAY,'crack']:null;
+  if (!timing) return false;
+  const [key,value,sound]=timing;
+  // Two runners may trigger the same piece before their messages cross.
+  if (part[key]!==undefined&&part[key]<=value) return false;
+  if (part[key]===undefined) emit(g,sound,part);
+  part[key]=value;
+  return true;
+}
+
+export function settleRunner(g,p,outcome,at,trap=null) {
+  if (p.status!=='running') return false;
+  p.outcome=outcome;
+  p.status=outcome==='finish'?'done':'out';
+  if (outcome==='finish') p.vx=p.vy=0;
+  p.endedAt=at;
+  p.hitTrap=trap;
+  if (outcome!=='timeout') emit(g,outcome,p);
+  return true;
+}
+
+export function stepRaceRunner(g,p,input,dt,onTrap) {
+  if (p.status!=='running') return;
+  const time=g.elapsed;
+  const trigger=index=>{
+    if (triggerRacePiece(g,index,time)) onTrap?.(index,time);
+  };
+  for (const [index,part] of g.placed.entries()) {
+    if (part.kind==='mine'&&time<(part.armedAt??Infinity)&&overlap(p,sweep(part))) trigger(index);
+  }
+  const {solids,hazards}=raceGeometry(g,time);
+  advanceRunner(g,p,input,dt,time,solids,(sound,source)=>{
+    if (sound==='crack') trigger(g.placed.indexOf(source));
+    else emit(g,sound,source);
   });
   const hit=hazards.find(box=>overlap(runnerHitbox(p),box));
   if (hit||p.y>HEIGHT+40) {
-    p.status='out';
-    const owner=hit&&g.players.find(other=>other.id===hit.owner&&other.id!==p.id&&other.connected);
-    if (owner) owner.score.trap++;
-    emit(g,'hit',p);
+    settleRunner(g,p,'hit',time,hit?.trap??null);
     return;
   }
-  const contact=runnerContacts(g,p);
-  if (!p.seal&&contact.seal) {
+  const {token,exit}=gameArena(g);
+  if (!p.seal&&overlap(p,token)) {
     p.seal=true;
     emit(g,'seal',p);
   }
-  if (contact.exit) {
-    p.status='done';
-    g.finish.push(p.id);
-    emit(g,'finish',p);
-  }
+  if (overlap(p,exit)) settleRunner(g,p,'finish',time);
 }
 
 export function step(g,inputs,dt) {
@@ -669,24 +678,9 @@ export function step(g,inputs,dt) {
   g.elapsed+=dt;
   if (g.phase==='draft'&&g.elapsed>=g.deadline) closeDraft(g);
   else if (g.phase==='build'&&g.elapsed>=g.deadline) beginCountdown(g);
-  else if (g.phase==='countdown'&&g.elapsed>=g.deadline) {
-    g.phase='race';
-    g.elapsed=0;
-    g.deadline=g.rules.raceTime;
-    for (const p of active(g)) p.status='running';
-    emit(g,'go');
-  } else if (g.phase==='race') {
-    for (const part of g.placed) {
-      if (part.kind==='mine'&&part.armedAt===undefined&&g.players.some(p=>p.status==='running'&&overlap(p,sweep(part)))) {
-        part.armedAt=g.elapsed;
-        emit(g,'arm',part);
-      }
-    }
-    const {solids,hazards}=raceGeometry(g,g.elapsed);
-    for (const p of active(g)) if (p.status==='running') move(g,p,inputs[p.id]||0,dt,solids,hazards);
-    if (g.elapsed>=g.deadline||active(g).every(p=>p.status!=='running')) {
-      for (const p of active(g)) if (p.status==='running') p.status='out';
-      tally(g);
-    }
+  else if (g.phase==='countdown'&&g.elapsed>=g.deadline) beginRace(g);
+  else if (g.phase==='race') {
+    for (const p of active(g)) stepRaceRunner(g,p,inputs[p.id]||0,dt);
+    if (g.elapsed>=g.deadline||active(g).every(p=>p.status!=='running')) finishRace(g);
   } else if (g.phase==='result'&&g.elapsed>=g.deadline) nextRound(g);
 }

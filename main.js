@@ -4,15 +4,16 @@ import {
   MOVEMENT_MIN, MOVEMENT_MAX, DEFAULT_WEIGHTS, MAX_PLAYERS, PICK_SECONDS, RACE_SECONDS, RACE_TICK,
   roomRules, newGame, canVoteReset, voteReset, resetVoteStatus, rankPlayers,
   pieceAt, canPlace, trashTarget, canDraft, canBuildFor, setPreview, draft, build, disconnect, step,
-} from './game.js?v=22';
-import { paint, paintBackdrop, drawPortraitOutfit } from './render.js?v=22';
+  beginRace, stepRaceRunner, settleRunner, finishRace, triggerRacePiece, ferryPosition,
+} from './game.js?v=24';
+import { paint, paintBackdrop, drawPortraitOutfit } from './render.js?v=24';
 import { MAP_FORMAT_VERSION, arenaFromMap, downloadMap, readMap, readMapFile } from './map-data.js?v=10';
-import { openMapEditor } from './map-editor.js?v=22';
+import { openMapEditor } from './map-editor.js?v=24';
 import { pieceURL } from './props.js?v=11';
 import { ROOM_VERSION, createLink, shortSession, peerLink, normalizeCode, validCode, setRelay, clearRelay, hasRelay } from './network.js?v=15';
 import { relaySession, usesRoomRelay as usesWebSocketRelay } from './relay.js?v=15';
 import { managedSession, usesManagedRooms } from './managed-room.js?v=16';
-import { GuestRunner, MotionBuffer, RACE_HISTORY, RunnerInputs, motionPacket, raceFrame, raceTick, stateVersion } from './motion.js?v=22';
+import { BuildMotion, RemoteRunners, motionPacket, raceTick, readRunnerPose, stateVersion } from './motion.js?v=24';
 
 const usesRoomRelay=usesWebSocketRelay||usesManagedRooms;
 const openRoomSession=usesWebSocketRelay?relaySession:usesManagedRooms?managedSession:shortSession;
@@ -23,25 +24,29 @@ const guestSeats=Array.from({length:MAX_PLAYERS-1},(_,i)=>i+1);
 const canvas=$('game'), ctx=canvas.getContext('2d'), dialog=$('dialog');
 const touchDevice=matchMedia('(pointer: coarse) and (hover: none)');
 const touchLayoutKey='salto-postal-touch-layout';
-const keys=new Set(),touch=new Map(),remoteKeys=new Map();
-let touchPhase='',touchJump=false;
+const keys=new Set(),touch=new Map();
+let touchPhase='',jumpQueued=false;
 const links=new Map();
 const cursors=new Map();
 const buildPoints=new Map();
-const motion=new MotionBuffer();
-const prediction=new GuestRunner();
-let raceFrames=[],endingRace=null;
-let publishedState='',nextMotion=0,nextInput=0,inputSequence=0,inputJumps=0,wantedInput=0;
-let nextClockProbe=0;
-let jumpInputAt=-Infinity;
+const buildMotion=new BuildMotion();
+const remoteRunners=new RemoteRunners();
+const pendingRaceMessages=[];
+const runnerPoses=new Map();
+const RACE_PROTOCOL=3;
+const RACE_TICK_MS=RACE_TICK*1000;
+const FINISH_GRACE=1500,RESULT_HOLD=180;
+const RACE_PROTOCOL_NOTICE='Recarga el juego y pide a toda la sala que use la misma versión.';
+let raceStart=null,bestClockRtt=Infinity,nextClockProbe=0,endingRace=null;
+let publishedState='',nextMotion=0;
 let profiles={0:defaultProfile(0)}, roomStatus='', roomError=false, connectedToRoom=false;
 let settings=roomRules(),buildDrag=null;
 let sentPreview='',sentPreviewAt=0,canvasView={scale:1,x:0,y:0};
 let roomSession=null,roomCode='',hostedManually=false;
 let roomMap=null,roomMapKey='',roomMapRevision=0;
 let mode='menu', game=null, arena=0, self=0, roster=[0];
-let muted=false,audio,lastEvent=0,lastFrame=performance.now(),lastInput=-1;
-let uiKey='', buildKey='', draftKey='', dialogPage='', pending=null, hostLink=null, countText='', lastMatch;
+let muted=false,audio,lastEvent=0,lastFrame=performance.now();
+let uiKey='', buildKey='', draftKey='', dialogPage='', pending=null, hostLink=null, countText='', lastTimeline;
 
 const button = (label, action, cls='secondary')=>{
   const node=document.createElement('button');
@@ -137,7 +142,6 @@ $('touch-settings').onclick=()=>{
     </fieldset>`);
   for (const option of dialog.querySelectorAll('[name="touch-layout"]')) option.onchange=()=>{
     clearTouch();
-    sendInput();
     touchLayout=option.value;
     applyTouchLayout();
     try { localStorage.setItem(touchLayoutKey,touchLayout); } catch { /* Keep the selection in this tab. */ }
@@ -168,19 +172,22 @@ function syncResetVote(g) {
 }
 
 function publishState() {
-  if (mode!=='host'||!game) return;
+  if (mode!=='host'||!game||game.phase==='race') return;
+  if (game.phase==='countdown'&&!Number.isFinite(game.raceStartsAt)) {
+    resetRaceNetwork();
+    raceStart=game.raceStartsAt=performance.now()+(game.deadline-game.elapsed)*1000;
+  }
   const version=stateVersion(game);
   if (version===publishedState) return;
   publishedState=version;
-  const race=(game.phase==='race'||game.raceEndedAt!==undefined)&&raceFrames.length?motionPacket(game,raceFrames):undefined;
-  sendAll({type:'state',game,race});
+  sendAll({type:'state',game});
 }
 function broadcastLobby(returnToLobby=false) {
   roster=[0,...activeLinks().map(link=>link.id)].sort((a,b)=>a-b);
   profiles=Object.fromEntries(roster.map(id=>[id,profiles[id]??defaultProfile(id)]));
   const selected=voteResult(roster,profiles,arena);
   for(const link of activeLinks()) {
-    link.send({type:'lobby',id:link.id,roster,arena:selected,profiles,rules:settings,returnToLobby,customMap:roomMap});
+    link.send({type:'lobby',raceProtocol:RACE_PROTOCOL,id:link.id,roster,arena:selected,profiles,rules:settings,returnToLobby,customMap:roomMap});
   }
   if(dialogPage==='host') refreshHost();
 }
@@ -193,7 +200,7 @@ function changeProfile(patch) {
   }
 }
 function canStartRoom() {
-  return roster.length>=2&&roster.every(id=>profiles[id]?.ready)&&!waitingForMapSupport();
+  return roster.length>=2&&roster.every(id=>profiles[id]?.ready)&&!waitingForMapSupport()&&activeLinks().every(link=>link.supportsRace);
 }
 function waitingForMapSupport() {
   return mode==='host'&&!!roomMap&&activeLinks().some(link=>!link.supportsMaps);
@@ -312,25 +319,28 @@ function startMatch() {
   if (mode!=='host'||game||!canStartRoom()) return;
   arena=voteResult(roster,profiles,arena);
   game=newGame(roster,arena,profiles,settings,roomMap);
-  raceFrames=[];
+  resetRaceNetwork();
   lastEvent=0;
   buildPoints.clear();
   clearInputs();
   publishState();
 }
+function resetRaceNetwork() {
+  buildMotion.reset();
+  remoteRunners.reset();
+  pendingRaceMessages.length=0;
+  runnerPoses.clear();
+  raceStart=null;
+  bestClockRtt=Infinity;
+  nextClockProbe=0;
+  endingRace=null;
+}
 function reset() {
   const peers=[...links.values(),hostLink].filter(Boolean);
   mode='menu';
   game=null;
-  motion.reset();
-  prediction.reset();
-  nextClockProbe=0;
-  raceFrames=[];
-  endingRace=null;
+  resetRaceNetwork();
   publishedState='';
-  lastInput=-1;
-  wantedInput=0;
-  remoteKeys.clear();
   roster=[0];
   self=0;
   profiles={0:defaultProfile(0)};
@@ -458,9 +468,8 @@ function acceptShortPeer(connection) {
     setStatus(COURIERS[id].name+' se ha unido.');
   },()=>{
     links.delete(id);
-    remoteKeys.delete(id);
     if (mode!=='host') return;
-    if (game) disconnect(game,id);
+    if (game) disconnectPlayer(id);
     broadcastLobby();
   },onHostMessage);
   links.set(id,link);
@@ -506,7 +515,6 @@ function joinShortRoom() {
   roomSession=openRoomSession(code,(connection,firstMessage)=>{
     function receive(link,message) {
         if (message.type==='reject') { failed(message.reason); return; }
-        if (message.type==='lobby'&&dialogPage==='short-guest') dialog.close();
         receiveGuest(link,message);
     }
     const link=peerLink(connection,0,()=>setStatus('Conectado. Esperando confirmación de la sala…'),
@@ -552,31 +560,32 @@ function onHostMessage(link,message) {
   if (!link.open) return;
   if (!game) {
     if (message.type==='map-support'&&message.version===MAP_FORMAT_VERSION) {
+      if (message.raceProtocol!==RACE_PROTOCOL) {
+        link.send({type:'reject',reason:RACE_PROTOCOL_NOTICE});
+        setTimeout(()=>link.close(),350);
+        return;
+      }
       link.supportsMaps=true;
+      link.supportsRace=true;
       return;
     }
-    if (message.type==='profile'&&message.patch&&typeof message.patch==='object'&&profiles[link.id]) {
+    if (link.supportsRace&&message.type==='profile'&&message.patch&&typeof message.patch==='object'&&profiles[link.id]) {
       profiles[link.id]=editProfile(profiles[link.id],message.patch);
       broadcastLobby();
     }
     return;
   }
   if (message.match!==game.match||message.round!==game.round) return;
-  if (message.type==='runner-clock'&&['countdown','race'].includes(game.phase)&&Number.isFinite(message.sent)) {
+  if (message.type==='runner-clock'&&raceStart!==null&&Number.isFinite(message.sent)) {
     link.send({type:'runner-clock',match:game.match,round:game.round,sent:message.sent,
-      tick:raceTick(game.phase==='countdown'?game.elapsed-game.deadline:game.elapsed)});
+      now:performance.now()});
     return;
   }
   if (message.type==='reset-vote') {
     if (voteReset(game,link.id,message.vote)) publishState();
     return;
   }
-  if (message.type==='input'&&game.phase==='race'&&Number.isInteger(message.bits)&&message.bits>=0&&message.bits<=7&&
-    Number.isSafeInteger(message.sequence)&&message.sequence>0) {
-    if (!remoteKeys.has(link.id)) remoteKeys.set(link.id,new RunnerInputs());
-    remoteKeys.get(link.id).add(message,raceTick(game.elapsed)+1);
-    return;
-  }
+  if (receiveRaceMessage(message,link.id)) return;
   if (message.type==='preview') {
     if (Number.isFinite(message.sequence)&&message.sequence>(link.previewSequence??-1)&&
       (message.point===null||typeof message.point==='object')&&setPreview(game,link.id,message.point)) link.previewSequence=message.sequence;
@@ -601,9 +610,8 @@ async function invite() {
     },()=>{
       links.delete(id);
       if(pending===link) pending=null;
-      remoteKeys.delete(id);
       if (mode!=='host') return;
-      if(game) disconnect(game,id);
+      if(game) disconnectPlayer(id);
       broadcastLobby();
       if (dialogPage==='host') setStatus('Conexión cerrada. Puedes generar otra invitación.');
     },onHostMessage);
@@ -687,9 +695,15 @@ async function answer() {
 function receiveGuest(link,message) {
   if (mode!=='guest'||link!==hostLink) return;
   if (message.type==='lobby'&&Array.isArray(message.roster)&&validSeat(message.id)&&message.profiles) {
+    if (message.raceProtocol!==RACE_PROTOCOL) {
+      reset();
+      modal('Actualiza el juego','notice','<p>'+RACE_PROTOCOL_NOTICE+'</p>');
+      return;
+    }
+    if (dialogPage==='short-guest') dialog.close();
     if (!link.announcedMaps) {
       link.announcedMaps=true;
-      link.send({type:'map-support',version:MAP_FORMAT_VERSION});
+      link.send({type:'map-support',version:MAP_FORMAT_VERSION,raceProtocol:RACE_PROTOCOL});
     }
     try { setRoomMap(message.customMap?readMap(message.customMap):null); }
     catch { return; }
@@ -700,72 +714,70 @@ function receiveGuest(link,message) {
     connectedToRoom=true;
     if (message.returnToLobby) {
       game=null;
-      motion.reset();
-      prediction.reset();
-      nextClockProbe=0;
-      endingRace=null;
-      lastInput=-1;
-      wantedInput=0;
-      inputSequence=0;
+      resetRaceNetwork();
     }
     if (ARENAS[message.arena]) arena=message.arena;
+    return;
   }
   if (message.type==='state'&&message.game?.players&&ARENAS[message.game.arena]) {
     const next=message.game;
+    const sameRound=game?.match===next.match&&game.round===next.round;
+    if (sameRound&&game.phase==='race'&&next.phase!=='result') return;
     if (next.customMap) {
       try { next.customMap=game?.match===next.match&&game.customMap?game.customMap:readMap(next.customMap); }
       catch { return; }
     }
     const now=performance.now();
-    const sameRound=game?.match===next.match&&game.round===next.round;
-    if (!sameRound) endingRace=null;
-    if (next.phase==='race') {
-      motion.push(next,message.race??motionPacket(next,[raceFrame(next)]),now,true);
-    } else if (next.phase==='result'&&sameRound&&game.phase==='race'&&message.race&&Number.isFinite(next.raceEndedAt)) {
-      motion.push(game,message.race,now,true);
-      endingRace={game:{...game,placed:next.placed,events:next.events},until:next.raceEndedAt,shown:false};
+    if (!sameRound) resetRaceNetwork();
+    if (next.phase==='countdown') {
+      raceStart??=now+(next.deadline-next.elapsed)*1000;
     }
-    if (sameRound&&game.phase===next.phase) {
-      if (next.phase!=='race') next.elapsed=Math.max(game.elapsed,next.elapsed);
-    } else {
-      lastInput=-1;
-      inputJumps=0;
-      inputSequence=0;
-      wantedInput=0;
-      const continuesRace=sameRound&&(game.phase==='countdown'&&next.phase==='race'||endingRace);
-      if (!continuesRace) {
-        prediction.reset();
-        nextClockProbe=0;
-      }
+    if (sameRound&&next.phase==='result'&&game.phase==='race') {
+      showRaceEnd(next,game.events,now,game.players.find(p=>p.id===self));
     }
-    game=message.game;
-    if ((next.phase==='race'||endingRace)&&message.race) prediction.push(message.race,self,now);
-  }
-  if (message.type==='runner-clock'&&game?.match===message.match&&game.round===message.round&&
-    ['countdown','race'].includes(game.phase)) prediction.synchronize(message.tick,message.sent,performance.now());
-  if (message.type==='motion'&&game) {
-    if (message.phase==='race'||message.phase==='build') {
-      const now=performance.now();
-      motion.push(endingRace?.game??game,message,now);
-      if (game.phase==='race'&&message.phase==='race'&&message.match===game.match&&message.round===game.round) prediction.push(message,self,now);
-    }
-    else if (message.match===game.match&&message.round===game.round&&message.phase===game.phase&&Number.isFinite(message.elapsed)) {
-      game.elapsed=Math.max(game.elapsed,message.elapsed);
-    }
+    if (sameRound&&game.phase===next.phase) next.elapsed=Math.max(game.elapsed,next.elapsed);
+    game=next;
+    return;
   }
   if (message.type==='claimed'||message.type==='blocked') tone('fail');
+  if (!game||message.match!==game.match||message.round!==game.round) return;
+  const now=performance.now();
+  if (message.type==='runner-clock'&&game.phase==='countdown'&&Number.isFinite(game.raceStartsAt)&&Number.isFinite(message.now)) {
+    const rtt=now-message.sent;
+    if (rtt>=0&&rtt<bestClockRtt&&rtt<1500) {
+      bestClockRtt=rtt;
+      raceStart=game.raceStartsAt-message.now+(message.sent+now)/2;
+    }
+    return;
+  }
+  if (message.type==='motion'&&message.phase==='race'&&Array.isArray(message.runners)) {
+    if (game.phase==='race'&&message.runners.length<=MAX_PLAYERS) {
+      for (const row of message.runners) {
+        if (!Array.isArray(row)) continue;
+        const [seat,elapsed,pose]=row;
+        receiveRaceMessage({type:'motion',phase:'race',seat,elapsed,pose});
+      }
+    }
+    return;
+  }
+  if (receiveRaceMessage(message)) return;
+  if (message.type==='motion'&&message.phase===game.phase&&Number.isFinite(message.elapsed)) {
+    if (game.phase==='build') buildMotion.push(game,message,now);
+    if (game.phase==='countdown') {
+      if (!Number.isFinite(bestClockRtt)) raceStart=Math.min(raceStart,now+(game.deadline-message.elapsed)*1000);
+    } else game.elapsed=Math.max(game.elapsed,message.elapsed);
+  }
 }
 
 function clearInputs() {
   keys.clear();
   clearTouch();
   releaseBuildDrag();
-  sendInput();
 }
 function clearTouch() {
   const held=[...touch];
   touch.clear();
-  touchJump=false;
+  jumpQueued=false;
   for (const [id,{node}] of held) {
     releaseTouchControl(node);
     if (node.hasPointerCapture(id)) node.releasePointerCapture(id);
@@ -791,25 +803,6 @@ function ownInput() {
   if (!dialog.open) bits|=touchBits('race');
   return bits;
 }
-function sendInput(force=false) {
-  if(mode!=='guest'||!hostLink?.open||game?.phase!=='race') return;
-  const bits=ownInput();
-  if(force||bits!==lastInput) {
-    const sequence=++inputSequence;
-    if (bits!==(lastInput<0?0:lastInput)) {
-      wantedInput=sequence;
-    }
-    if ((bits&4)&&(lastInput<0||!(lastInput&4))) {
-      inputJumps++;
-      jumpInputAt=performance.now();
-    }
-    const atTick=prediction.record(bits,sequence,inputJumps,performance.now());
-    const packet={type:'input',match:game.match,round:game.round,bits,sequence,jumps:inputJumps,atTick};
-    hostLink.sendFastInput(packet);
-    hostLink.send(packet);
-    lastInput=bits;
-  }
-}
 const gameKeys=new Set(['Space','KeyA','KeyD','KeyW','ArrowLeft','ArrowRight','ArrowUp']);
 window.addEventListener('keydown',event=>{
   if(dialog.open||!game) return;
@@ -824,18 +817,15 @@ window.addEventListener('keydown',event=>{
     draftKeypress(event);
     return;
   }
+  if (!event.repeat&&!(ownInput()&4)&&['Space','KeyW','ArrowUp'].includes(event.code)) jumpQueued=true;
   keys.add(event.code);
-  sendInput();
 });
-window.addEventListener('keyup',event=>{ keys.delete(event.code); sendInput(); });
+window.addEventListener('keyup',event=>keys.delete(event.code));
 window.addEventListener('blur',clearInputs);
 document.addEventListener('visibilitychange',()=>{if(document.hidden) clearInputs();});
 window.addEventListener('resize',()=>{
   releaseBuildDrag();
-  if (touch.size) {
-    clearTouch();
-    sendInput();
-  }
+  if (touch.size) clearTouch();
 });
 
 function steerStick(press,event) {
@@ -863,12 +853,11 @@ for (const node of document.querySelectorAll('.touch [data-key],.touch [data-sti
       press.radius=rect.width*.27;
       press.bit=steerStick(press,event);
     }
-    if (mode==='host'&&phase==='race'&&press.bit===4&&!(ownInput()&4)) touchJump=true;
+    if (phase==='race'&&press.bit===4&&!(ownInput()&4)) jumpQueued=true;
     node.setPointerCapture(event.pointerId);
     touch.set(event.pointerId,press);
     node.setAttribute('data-pressed','');
-    if (phase==='race') sendInput();
-    else if (!stick) shiftBuildCursor(Number(press.bit===2)-Number(press.bit===1),Number(press.bit===8)-Number(press.bit===4),8);
+    if (phase==='build'&&!stick) shiftBuildCursor(Number(press.bit===2)-Number(press.bit===1),Number(press.bit===8)-Number(press.bit===4),8);
   });
   if (stick) node.addEventListener('pointermove',event=>{
     const press=touch.get(event.pointerId);
@@ -876,38 +865,14 @@ for (const node of document.querySelectorAll('.touch [data-key],.touch [data-sti
     const bit=steerStick(press,event);
     if (press.bit===bit) return;
     press.bit=bit;
-    if (phase==='race') sendInput();
   });
   for (const type of ['pointerup','pointercancel','lostpointercapture']) node.addEventListener(type,event=>{
     if (!touch.delete(event.pointerId)) return;
     if (![...touch.values()].some(press=>press.node===node)) releaseTouchControl(node);
-    if (phase==='race') sendInput();
   });
   node.addEventListener('contextmenu',event=>event.preventDefault());
 }
 $('touch-place').onclick=()=>confirmPlacement(self);
-function hostInputs() {
-  if (game.phase!=='race') {
-    remoteKeys.clear();
-    return {input:{},urgent:false};
-  }
-  const input={0:ownInput()|(touchJump?8:0)};
-  const tick=raceTick(game.elapsed)+1;
-  let urgent=false;
-  touchJump=false;
-  for (const p of game.players) {
-    const command=remoteKeys.get(p.id)?.take(tick);
-    if (!command) continue;
-    input[p.id]=command.input;
-    if (p.inputSequence!==command.sequence) {
-      p.inputSequence=command.sequence;
-      p.inputAt=game.elapsed+RACE_TICK;
-      p.inputJumps=command.jumps;
-      urgent||=command.urgent&&p.status==='running';
-    }
-  }
-  return {input,urgent};
-}
 function builder() {
   return canBuildFor(game,self)?self:undefined;
 }
@@ -1334,6 +1299,7 @@ function renderPodium(sheet,g) {
   },'ghost');
   const back=mode==='host'?button('Volver al lobby',()=>{
     game=null;
+    resetRaceNetwork();
     profiles=Object.fromEntries(roster.map(id=>[id,{...profiles[id],ready:false}]));
     broadcastLobby(true);
   },'primary'):null;
@@ -1500,7 +1466,6 @@ function syncUI(g) {
       $('touch-build').hidden=pad!=='build';
       if (pad==='build') $('touch-place').textContent=g.picks[self]==='trash'?'Borrar':'Colocar';
       $('stage').classList.toggle('touch-build-active',pad==='build');
-      sendInput();
     }
     countText='';
     if (g) renderRoster(g);
@@ -1534,96 +1499,169 @@ function syncUI(g) {
   }
 }
 const SEND_INTERVAL=1000/30;
-let extraMotionSent=false,lastBroadcastFrame;
-function rememberRaceFrame(previousPhase,urgent) {
-  if (game.phase!=='race'&&previousPhase!=='race') return;
-  if (previousPhase!=='race') raceFrames=[];
-  const last=raceFrames.at(-1);
-  // Store 60 poses per second, plus the exact simulation tick of every event.
-  if (!urgent&&game.phase==='race'&&last&&last[1]===game.event.id&&Math.round((game.elapsed-last[0])/RACE_TICK)<2) return;
-  raceFrames.push(raceFrame(game));
-  if (raceFrames.length>RACE_HISTORY) raceFrames.shift();
+
+function sendRaceControl(message) {
+  const packet={...message,match:game.match,round:game.round};
+  if (mode==='host') sendAll(packet);
+  else hostLink?.send(packet);
+}
+
+function broadcastMotion() {
+  const packet=motionPacket(game);
+  if (game.phase!=='race') {
+    if (mode==='host'&&!game.over) for (const link of activeLinks()) link.sendMotion(packet);
+    return;
+  }
+  const player=game.players.find(p=>p.id===self);
+  const own=player.status==='running'?motionPacket(game,player):null;
+  if (mode==='guest') {
+    if (own) hostLink?.sendMotion(own);
+    return;
+  }
+  if (own) runnerPoses.set(self,[self,own.elapsed,own.pose]);
+  else runnerPoses.delete(self);
+  if (!runnerPoses.size) return;
+  const runners=[...runnerPoses.values()];
+  // The fallback keeps one latest snapshot per peer, so bundle all other runners together.
+  for (const link of activeLinks()) {
+    const visible=runners.filter(([seat])=>seat!==link.id);
+    if (visible.length) link.sendMotion({...packet,runners:visible});
+  }
+}
+
+function disconnectPlayer(seat) {
+  disconnect(game,seat);
+  runnerPoses.delete(seat);
+  if (game.phase==='race'||game.phase==='countdown') sendRaceControl({type:'runner-away',seat});
+}
+
+function receiveRaceMessage(message,sender) {
+  const {type}=message;
+  const motionFrame=type==='motion'&&message.phase==='race';
+  if (!motionFrame&&type!=='runner-end'&&type!=='runner-away'&&type!=='trap-trigger') return false;
+  if (sender!==undefined&&type==='runner-away') return true;
+  if (game.phase==='countdown') {
+    // The clock estimate may let a peer cross the start a few ticks earlier.
+    if (!motionFrame&&pendingRaceMessages.length<128) pendingRaceMessages.push({message,sender});
+    return true;
+  }
+  if (game.phase!=='race') return true;
+  if (type==='trap-trigger') {
+    const {index,at}=message;
+    if (Number.isInteger(index)&&Number.isFinite(at)&&at>=0&&at<=game.deadline&&triggerRacePiece(game,index,at)&&mode==='host') {
+      sendRaceControl({type,index,at});
+    }
+    return true;
+  }
+  const seat=sender??message.seat;
+  const player=game.players.find(p=>p.id===seat&&p.id!==self&&p.connected);
+  if (!player) return true;
+  if (type==='runner-away') {
+    disconnect(game,seat);
+    return true;
+  }
+  if (player.status!=='running') return true;
+  const pose=readRunnerPose(game,message);
+  if (!pose) return true;
+  const outcome=type==='runner-end'?message.outcome:null;
+  const received=(performance.now()-raceStart)/1000;
+  if (!remoteRunners.push(player,pose,message.elapsed,received,outcome)) return true;
+  Object.assign(player,pose);
+  if (outcome) {
+    settleRunner(game,player,outcome,message.elapsed,message.trap);
+    runnerPoses.delete(seat);
+    if (mode==='host') sendAll(motionPacket(game,player));
+  } else if (mode==='host') runnerPoses.set(seat,[seat,message.elapsed,message.pose]);
+  return true;
+}
+
+function showRaceEnd(result,events,now,owned) {
+  const players=owned?.outcome?result.players.map(p=>p.id===owned.id&&p.outcome===owned.outcome?owned:p):result.players;
+  endingRace={until:now+RESULT_HOLD,view:{
+    ...result,players,phase:'race',elapsed:result.raceEndedAt,deadline:result.rules.raceTime,
+    over:false,event:events.at(-1)??result.event,events,
+  }};
+}
+
+function tickRace(now) {
+  if (game.phase==='countdown') {
+    if (now<raceStart) {
+      game.elapsed=Math.max(0,game.deadline-(raceStart-now)/1000);
+      return;
+    }
+    beginRace(game);
+    for (const {message,sender} of pendingRaceMessages.splice(0)) receiveRaceMessage(message,sender);
+  }
+
+  const player=game.players.find(p=>p.id===self);
+  const endTick=raceTick(game.deadline);
+  const target=Math.min(endTick,Math.floor((now-raceStart)/RACE_TICK_MS));
+  let tick=raceTick(game.elapsed);
+  if (target-tick>12) {
+    // After suspension, resume at the current trap phase without replaying stale controls.
+    const resume=target-12;
+    if (player.status==='running'&&Number.isInteger(player.support)) {
+      player.x+=ferryPosition(game,player.support,resume*RACE_TICK).x-ferryPosition(game,player.support,game.elapsed).x;
+    }
+    tick=resume;
+  }
+  const running=player.status==='running';
+  while (tick<target&&player.status==='running') {
+    game.elapsed=Math.min(++tick*RACE_TICK,game.deadline);
+    const input=ownInput()|(jumpQueued?8:0);
+    jumpQueued=false;
+    stepRaceRunner(game,player,input,RACE_TICK,(index,at)=>sendRaceControl({type:'trap-trigger',index,at}));
+  }
+  game.elapsed=Math.min(target*RACE_TICK,game.deadline);
+  if (target===endTick&&player.status==='running') settleRunner(game,player,'timeout',game.deadline);
+  if (running&&player.outcome) {
+    const packet=motionPacket(game,player);
+    if (mode==='host') sendAll(packet);
+    else hostLink?.send(packet);
+  }
+  if (mode==='host'&&(
+    game.players.every(p=>p.status!=='running')||now>=raceStart+game.deadline*1000+FINISH_GRACE
+  )) {
+    const events=game.events;
+    finishRace(game);
+    showRaceEnd(game,events,now);
+  }
 }
 
 function presentGame(now) {
-  if (endingRace?.shown) endingRace=null;
-  if (endingRace) {
-    const view=motion.view(endingRace.game,now);
-    endingRace.shown=view.elapsed>=endingRace.until;
-    return view;
-  }
-  if (mode==='host'&&game?.phase==='race'&&raceFrames.length) return motion.raceView(game,raceFrames.at(-1));
-  if (mode!=='guest'||!game) return game;
-  const view=motion.view(game,now,self,wantedInput);
-  if (wantedInput&&view.players.find(p=>p.id===self)?.inputSequence>=wantedInput) wantedInput=0;
-  return view;
-}
-
-function localRaceFeedback(view,now,dt) {
-  if (mode!=='guest'||view?.phase!=='race') {
-    jumpInputAt=-Infinity;
-    return null;
-  }
-  const steer=wantedInput?Number(Boolean(lastInput&2))-Number(Boolean(lastInput&1)):0;
-  const pose=prediction.update(view,view.players.find(player=>player.id===self),now,dt);
-  const previewSeal=prediction.previewSeal;
-  const crouch=wantedInput?Math.max(0,1-(now-jumpInputAt)/120)*.12:0;
-  return pose||steer||crouch||previewSeal?{steer,pose,crouch,previewSeal}:null;
+  if (endingRace&&now<endingRace.until) return endingRace.view;
+  endingRace=null;
+  if (!game) return null;
+  if (game.phase==='race') return {...game,players:game.players.map(p=>p.id===self?p:remoteRunners.view(game,p))};
+  return mode==='guest'?buildMotion.view(game,now):game;
 }
 
 let accumulator=0;
 function frame(now) {
   const dt=Math.min((now-lastFrame)/1000,.1);
-  accumulator+=dt;
   lastFrame=now;
-  let sendInputFrame=false;
-  if (game&&mode==='host') {
-    while (accumulator>=RACE_TICK) {
-      const phase=game.phase;
-      const {input,urgent}=hostInputs();
-      step(game,input,RACE_TICK);
-      rememberRaceFrame(phase,urgent);
-      sendInputFrame||=urgent;
+  if (game?.phase==='race'||(game?.phase==='countdown'&&raceStart!==null)) {
+    accumulator=0;
+    tickRace(now);
+  } else if (game&&mode==='host') {
+    accumulator+=dt;
+    while (accumulator>=RACE_TICK&&game.phase!=='countdown') {
+      step(game,{},RACE_TICK);
       accumulator-=RACE_TICK;
     }
-    publishState();
   } else accumulator=0;
+  publishState();
   const view=presentGame(now);
   syncUI(view);
   moveBuildCursors(dt);
-  if (now>=nextMotion) {
-    nextMotion+=SEND_INTERVAL;
-    if (now-nextMotion>=SEND_INTERVAL) nextMotion=now+SEND_INTERVAL;
-    extraMotionSent=false;
-    broadcastPreview();
-    if (game&&mode==='host'&&!game.over) {
-      const packet=motionPacket(game,game.phase==='race'?raceFrames:undefined);
-      for (const link of activeLinks()) link.sendMotion(packet);
-      lastBroadcastFrame=game.phase==='race'?raceFrames.at(-1):undefined;
-    }
-  } else if (sendInputFrame&&game.phase==='race') {
-    extraMotionSent=true;
-    lastBroadcastFrame=raceFrames.at(-1);
-    const packet=motionPacket(game,raceFrames);
-    for (const link of activeLinks()) link.sendMotion(packet);
-  } else if (!extraMotionSent&&mode==='host'&&game?.phase==='race'&&
-    raceFrames.at(-1)!==lastBroadcastFrame) {
-    // Keep the full history on the regular send slot for recovery after packet loss.
-    extraMotionSent=true;
-    const packet=motionPacket(game,raceFrames.slice(-2));
-    for (const link of activeLinks()) link.sendExtraMotion(packet);
-  }
-  if (mode==='guest'&&now>=nextInput) {
-    nextInput=now+200;
-    sendInput(true);
-  }
-  if (mode==='guest'&&hostLink?.open&&['countdown','race'].includes(game?.phase)&&now>=nextClockProbe) {
-    nextClockProbe=now+(game.phase==='countdown'?250:600);
+  if (mode==='guest'&&hostLink?.open&&game?.phase==='countdown'&&now>=nextClockProbe) {
+    nextClockProbe=now+250;
     hostLink.send({type:'runner-clock',match:game.match,round:game.round,sent:performance.now()});
   }
-  if (view?.match!==lastMatch) {
-    lastMatch=view?.match;
-    lastEvent=0;
+  const timeline=view&&[view.match,view.round,view.phase==='race'||view.phase==='result'?view.phase:'setup'].join('/');
+  if (timeline!==lastTimeline) {
+    lastTimeline=timeline;
+    lastEvent=(view?.event.id??1)-1;
   }
   if (view?.phase==='race') {
     for (const event of view.events) if (event.id>lastEvent) {
@@ -1640,7 +1678,12 @@ function frame(now) {
   paintBackdrop(ctx,shownArena,canvas.width,canvas.height,now/1000,shownMap);
   const {x,y,scale}=canvasView;
   ctx.setTransform(scale,0,0,scale,x,y);
-  paint(ctx,view,shownArena,visiblePlacements(view),now/1000,self,false,shownMap,localRaceFeedback(view,performance.now(),dt));
+  paint(ctx,view,shownArena,visiblePlacements(view),now/1000,self,false,shownMap);
+  if (now>=nextMotion) {
+    nextMotion=Math.max(nextMotion+SEND_INTERVAL,now);
+    broadcastPreview();
+    if (game) broadcastMotion();
+  }
   requestAnimationFrame(frame);
 }
 const roomParams=new URLSearchParams(location.search);
