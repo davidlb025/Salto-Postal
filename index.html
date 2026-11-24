@@ -2,17 +2,18 @@
 <html lang="es">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content">
   <meta name="theme-color" content="#151c2e">
   <title>Salto Postal</title>
   <meta name="room-relay" content="">
   <meta name="room-config" content="https://salto-postal-davidlb025.web.app/room-config.json">
   <link rel="icon" href="./assets/door.png" type="image/png">
-  <link rel="stylesheet" href="./style.css?v=10">
+  <link rel="stylesheet" href="./style.css?v=11">
 </head>
 <body data-phase="menu">
   <main class="stage" id="stage" aria-label="Salto Postal">
     <canvas id="game" width="960" height="450" aria-label="Escenario de Salto Postal"></canvas>
+    <div id="playfield" aria-hidden="true"></div>
     <div id="start-screen" class="start-screen">
       <div class="intro">
         <h1>Salto <em>Postal</em></h1>
@@ -23,24 +24,36 @@
         </div>
       </div>
     </div>
-    <div class="top-actions" aria-label="Controles del juego">
-      <button id="sound" class="pixel-tool" aria-pressed="true" aria-label="Sonido activado" title="Sonido">♪</button>
-      <button id="fullscreen" class="pixel-tool" aria-pressed="false" aria-label="Activar pantalla completa" title="Pantalla completa"><span class="expand-icon" aria-hidden="true"></span></button>
-      <button id="touch-settings" class="pixel-tool" aria-label="Controles táctiles" aria-haspopup="dialog" hidden>Táctil</button>
-      <button id="help" class="pixel-tool" aria-label="Cómo jugar" title="Cómo jugar">?</button>
-      <button id="exit" class="pixel-tool" hidden>Salir</button>
-    </div>
-    <div class="match-hud" id="match-hud" hidden>
-      <div class="match-info"><strong id="arena-label"></strong><span id="round-label"></span></div>
-      <div id="roster" class="roster" aria-label="Jugadores"></div>
-      <div id="timer" class="timer" hidden></div>
-      <button id="reset-vote" class="ghost" type="button" aria-pressed="false" hidden></button>
-    </div>
+    <header class="game-header">
+      <div class="match-hud" id="match-hud" hidden>
+        <details id="match-details">
+          <summary class="hud-trigger">
+            <strong id="phase"></strong><span id="round-label"></span>
+          </summary>
+          <div class="hud-panel match-panel">
+            <strong id="arena-label"></strong>
+            <p id="phase-note"></p>
+            <div id="roster" class="roster" role="list" aria-label="Jugadores"></div>
+            <button id="reset-vote" class="ghost" type="button" aria-pressed="false" hidden></button>
+          </div>
+        </details>
+        <div id="timer" class="timer" role="timer" aria-label="Tiempo restante" hidden></div>
+      </div>
+      <details id="game-options" class="game-options">
+        <summary class="hud-trigger">Opciones</summary>
+        <div class="hud-panel options-panel">
+          <button id="sound" class="ghost" aria-label="Sonido" aria-pressed="true">Sonido</button>
+          <button id="fullscreen" class="ghost" aria-pressed="false">Pantalla completa</button>
+          <button id="touch-settings" class="ghost" aria-haspopup="dialog" hidden>Controles táctiles</button>
+          <button id="help" class="ghost" aria-haspopup="dialog">Cómo jugar</button>
+          <button id="exit" class="ghost" hidden>Salir de la sala</button>
+        </div>
+      </details>
+    </header>
     <section id="station" class="station" aria-labelledby="station-title" hidden></section>
     <div id="game-overlay" class="overlay" hidden><strong id="overlay-title"></strong><span id="overlay-text"></span></div>
     <section id="sheet" class="sheet" aria-label="Selección y resultados" hidden></section>
-    <div id="work" class="work" hidden></div>
-    <div id="controls" class="bar" hidden><strong id="phase"></strong><span id="phase-note"></span></div>
+    <p id="build-wait" class="build-wait" role="status" hidden>Esperando al resto de la cuadrilla…</p>
     <div id="touch" class="touch" role="group" aria-label="Controles táctiles de carrera" hidden>
       <div class="touch-directions" data-touch-layout="arrows">
         <button type="button" data-key="1" aria-label="Izquierda"><span class="touch-arrow" aria-hidden="true"></span></button>
@@ -51,21 +64,31 @@
       </div>
       <button type="button" class="primary touch-action" data-key="4"><span class="touch-arrow" aria-hidden="true"></span>Saltar</button>
     </div>
-    <div id="touch-build" class="touch" role="group" aria-label="Controles táctiles de construcción" hidden>
-      <div class="touch-directions touch-dpad" data-touch-layout="arrows">
-        <button type="button" data-key="4" aria-label="Subir pieza"><span class="touch-arrow" aria-hidden="true"></span></button>
-        <button type="button" data-key="1" aria-label="Mover pieza a la izquierda"><span class="touch-arrow" aria-hidden="true"></span></button>
-        <button type="button" data-key="8" aria-label="Bajar pieza"><span class="touch-arrow" aria-hidden="true"></span></button>
-        <button type="button" data-key="2" aria-label="Mover pieza a la derecha"><span class="touch-arrow" aria-hidden="true"></span></button>
+    <div id="touch-build" class="touch" role="group" aria-label="Controles de construcción" hidden>
+      <div class="build-movement" id="build-movement">
+        <div class="touch-directions touch-dpad" data-touch-layout="arrows">
+          <button type="button" data-key="4" aria-label="Subir pieza"><span class="touch-arrow" aria-hidden="true"></span></button>
+          <button type="button" data-key="1" aria-label="Mover pieza a la izquierda"><span class="touch-arrow" aria-hidden="true"></span></button>
+          <button type="button" data-key="8" aria-label="Bajar pieza"><span class="touch-arrow" aria-hidden="true"></span></button>
+          <button type="button" data-key="2" aria-label="Mover pieza a la derecha"><span class="touch-arrow" aria-hidden="true"></span></button>
+        </div>
+        <div class="touch-stick" data-touch-layout="joystick" data-stick role="img" aria-label="Joystick para mover la pieza" hidden>
+          <span class="touch-stick-knob" aria-hidden="true"></span>
+        </div>
       </div>
-      <div class="touch-stick" data-touch-layout="joystick" data-stick role="img" aria-label="Joystick para mover la pieza" hidden>
-        <span class="touch-stick-knob" aria-hidden="true"></span>
+      <div class="build-tools">
+        <div class="placement" id="build-piece"><strong id="build-piece-name"></strong></div>
+        <div class="build-actions">
+          <button type="button" id="build-flip" class="ghost" hidden>Girar</button>
+          <button type="button" id="build-skip" class="ghost">Pasar</button>
+        </div>
+        <button type="button" id="touch-place" class="primary touch-action">Colocar</button>
+        <span id="placement-status" class="visually-hidden" role="status"></span>
       </div>
-      <button type="button" id="touch-place" class="primary touch-action">Colocar</button>
     </div>
     <dialog id="dialog" aria-labelledby="dialog-title"><div class="dialog-head"><h2 id="dialog-title"></h2><button class="ghost" id="close" aria-label="Cerrar">×</button></div><div id="dialog-body"></div></dialog>
   </main>
   <script defer src="./vendor/peerjs.min.js"></script>
-  <script type="module" src="./main.js?v=24"></script>
+  <script type="module" src="./main.js?v=25"></script>
 </body>
 </html>

@@ -1,6 +1,6 @@
 # Salto Postal
 
-Plataformas 2D en línea para 2–4 personas. El escenario ocupa toda la ventana, incluido el menú, y el botón de expandir activa la pantalla completa del navegador.
+Plataformas 2D en línea para 2–4 personas. El escenario ocupa toda la ventana. En **Opciones → Pantalla completa** puedes ampliar el juego al tamaño de la pantalla.
 
 ## Cómo funciona una ronda
 
@@ -36,7 +36,7 @@ Hay doce pistas: Dársena 07, Azotea Iris, Canal Neón, Fundición Ámbar, Anten
 
 - **En línea.** El anfitrión comparte el enlace de la sala o el código de seis caracteres. El enlace abre el juego en la misma dirección y rellena el código. Dentro de la Estación de reparto, cada persona elige su animal, su complemento y el mapa que prefiere. El anfitrión puede empezar cuando todos marcan **Listo**. Se juega el mapa más votado. Si hay empate, se usa el voto del anfitrión si está entre los empatados. Si nadie vota, se usa la pista anterior.
 - **Conexión manual.** Si la señalización automática falla, selecciona **Conexión manual**. El anfitrión genera una invitación WebRTC por invitado. Cada invitado devuelve su respuesta para confirmar la conexión.
-- **Carrera.** Corre con A/D o las flechas. Salta con W, ↑ o espacio. En móviles y tablets, abre **Táctil** para elegir flechas o joystick. Puedes moverte y pulsar **Saltar** con otro dedo.
+- **Carrera.** Corre con A/D o las flechas. Salta con W, ↑ o espacio. En móviles y tablets, abre **Opciones → Controles táctiles** para elegir flechas o joystick. Puedes moverte y pulsar **Saltar** con otro dedo.
 - **Construcción táctil.** Toca o arrastra sobre el mapa para ajustar la vista previa. También puedes usar el mando elegido. Pulsa **Colocar** para confirmar. El juego recuerda el mando en ese navegador.
 - **Construcción con teclado.** Usa WASD o flechas y confirma con E o Enter.
 

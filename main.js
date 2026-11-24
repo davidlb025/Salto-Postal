@@ -21,7 +21,7 @@ const openRoomSession=usesWebSocketRelay?relaySession:usesManagedRooms?managedSe
 const $ = id=>document.getElementById(id);
 const validSeat=id=>Number.isInteger(id)&&id>=0&&id<MAX_PLAYERS;
 const guestSeats=Array.from({length:MAX_PLAYERS-1},(_,i)=>i+1);
-const canvas=$('game'), ctx=canvas.getContext('2d'), dialog=$('dialog');
+const canvas=$('game'), ctx=canvas.getContext('2d'), dialog=$('dialog'), playfield=$('playfield');
 const touchDevice=matchMedia('(pointer: coarse) and (hover: none)');
 const touchLayoutKey='salto-postal-touch-layout';
 const keys=new Set(),touch=new Map();
@@ -84,10 +84,33 @@ window.addEventListener('pointerdown',enableAudio);
 window.addEventListener('keydown',enableAudio);
 $('sound').onclick=()=>{
   muted=!muted;
-  $('sound').textContent=muted?'♫̸':'♪';
   $('sound').setAttribute('aria-pressed',String(!muted));
-  $('sound').setAttribute('aria-label',muted?'Sonido silenciado':'Sonido activado');
 };
+
+const disclosures=[$('match-details'),$('game-options')];
+function closeDisclosure(details,restoreFocus=false) {
+  if (!details.open) return;
+  details.open=false;
+  if (restoreFocus) details.querySelector('summary').focus({preventScroll:true});
+}
+for (const details of disclosures) {
+  details.querySelector('summary').addEventListener('click',()=>{
+    clearInputs();
+    for (const other of disclosures) if (other!==details) closeDisclosure(other);
+  });
+  details.addEventListener('keydown',event=>{
+    if (event.key==='Escape'&&details.open) {
+      event.preventDefault();
+      closeDisclosure(details,true);
+    }
+  });
+}
+document.addEventListener('pointerdown',event=>{
+  for (const details of disclosures) if (!details.contains(event.target)) closeDisclosure(details);
+});
+$('game-options').addEventListener('click',event=>{
+  if (event.target.closest('button')) closeDisclosure($('game-options'),true);
+},{capture:true});
 
 function modal(title, page, markup) {
   dialogPage=page;
@@ -109,7 +132,7 @@ $('help').onclick=()=>{
     <p><strong>Entrega.</strong> Entra en el escáner verde. Cada entrega vale 3 puntos si alguien se queda fuera. El primero en llegar recibe 1 punto, incluso si todos entregan.</p>
     <p><strong>Bonos.</strong> Suma 1 por cada rival eliminado por una trampa tuya y 1 de estilo si recoges el sello dorado y entregas. La partida termina al alcanzar la meta de puntos o el límite de rondas de la sala.</p>
     <p>Corre con A/D o las flechas. Salta con W, ↑ o espacio.</p>
-    ${touchDevice.matches?'<p>Abre <strong>Táctil</strong> para elegir flechas o joystick.</p>':''}`);
+    ${touchDevice.matches?'<p>En <strong>Opciones → Controles táctiles</strong> puedes elegir flechas o joystick.</p>':''}`);
 };
 
 let touchLayout='arrows';
@@ -780,7 +803,7 @@ function clearTouch() {
   jumpQueued=false;
   for (const [id,{node}] of held) {
     releaseTouchControl(node);
-    if (node.hasPointerCapture(id)) node.releasePointerCapture(id);
+    if (typeof id==='number'&&node.hasPointerCapture(id)) node.releasePointerCapture(id);
   }
 }
 function releaseTouchControl(node) {
@@ -805,13 +828,13 @@ function ownInput() {
 }
 const gameKeys=new Set(['Space','KeyA','KeyD','KeyW','ArrowLeft','ArrowRight','ArrowUp']);
 window.addEventListener('keydown',event=>{
-  if(dialog.open||!game) return;
+  if(dialog.open||!game||event.target.closest?.('.game-header details[open]')) return;
   if (game.phase==='build') {
     buildKeypress(event);
     return;
   }
   if(!gameKeys.has(event.code) ||
-    (event.code==='Space' && document.activeElement?.matches('button'))) return;
+    (event.code==='Space' && document.activeElement?.matches('button,summary'))) return;
   event.preventDefault();
   if (game.phase==='draft') {
     draftKeypress(event);
@@ -843,7 +866,7 @@ for (const node of document.querySelectorAll('.touch [data-key],.touch [data-sti
   const phase=node.closest('#touch-build')?'build':'race';
   const stick=node.hasAttribute('data-stick');
   node.addEventListener('pointerdown',event=>{
-    if (event.button!==0||event.pointerType==='mouse'||!touchDevice.matches||dialog.open||
+    if (event.button!==0||!touchDevice.matches||dialog.open||
       game?.phase!==phase||touchPhase!==phase||(stick&&node.hasAttribute('data-pressed'))) return;
     const press={node,phase,bit:Number(node.dataset.key)};
     if (stick) {
@@ -870,9 +893,36 @@ for (const node of document.querySelectorAll('.touch [data-key],.touch [data-sti
     if (!touch.delete(event.pointerId)) return;
     if (![...touch.values()].some(press=>press.node===node)) releaseTouchControl(node);
   });
+  if (!stick) node.addEventListener('click',event=>{
+    if (event.detail!==0||dialog.open||game?.phase!==phase||touchPhase!==phase) return;
+    const bit=Number(node.dataset.key);
+    if (phase==='build') shiftBuildCursor(Number(bit===2)-Number(bit===1),Number(bit===8)-Number(bit===4),8);
+    else if (bit===4) jumpQueued=true;
+    else {
+      const press={node,phase,bit};
+      touch.set(node,press);
+      node.setAttribute('data-pressed','');
+      setTimeout(()=>{
+        if (touch.get(node)!==press) return;
+        touch.delete(node);
+        if (![...touch.values()].some(held=>held.node===node)) releaseTouchControl(node);
+      },180);
+    }
+  });
   node.addEventListener('contextmenu',event=>event.preventDefault());
 }
 $('touch-place').onclick=()=>confirmPlacement(self);
+$('build-skip').onclick=()=>act('skip');
+$('build-flip').onclick=()=>{
+  const point=pointFor(self);
+  const face=-point.face;
+  buildPoints.set(self,{...point,face});
+  showBuildDirection(face);
+};
+function showBuildDirection(face) {
+  $('build-flip').textContent=face===1?'Girar →':'Girar ←';
+  $('build-flip').setAttribute('aria-label',face===1?'Girar. Apunta a la derecha.':'Girar. Apunta a la izquierda.');
+}
 function builder() {
   return canBuildFor(game,self)?self:undefined;
 }
@@ -925,18 +975,22 @@ const clamp=(n,min,max)=>Math.min(max,Math.max(min,n));
 
 function resizeCanvas() {
   const width=canvas.clientWidth, height=canvas.clientHeight;
-  if (!width||!height) return;
+  const fieldWidth=playfield.clientWidth, fieldHeight=playfield.clientHeight;
+  if (!width||!height||!fieldWidth||!fieldHeight) return;
   const ratio=Math.min(devicePixelRatio,1920/width,1260/height);
   const w=Math.round(width*ratio),h=Math.round(height*ratio);
   if (canvas.width!==w||canvas.height!==h) {
     canvas.width=w;
     canvas.height=h;
   }
-  const padding=Math.min(height*.23,height<470?45:78)*ratio;
-  const scale=Math.min(w/WIDTH,(h-padding*2)/HEIGHT);
-  canvasView={scale,x:(w-WIDTH*scale)/2,y:(h-HEIGHT*scale)/2};
+  const scaleX=w/width, scaleY=h/height;
+  const scale=Math.min(fieldWidth*scaleX/WIDTH,fieldHeight*scaleY/HEIGHT);
+  canvasView={scale,x:(playfield.offsetLeft+fieldWidth/2)*scaleX-WIDTH*scale/2,
+    y:(playfield.offsetTop+fieldHeight/2)*scaleY-HEIGHT*scale/2};
 }
-new ResizeObserver(resizeCanvas).observe(canvas);
+const canvasObserver=new ResizeObserver(resizeCanvas);
+canvasObserver.observe(canvas);
+canvasObserver.observe(playfield);
 resizeCanvas();
 
 function gamePoint(event,id) {
@@ -961,7 +1015,11 @@ function confirmPlacement(id) {
   const preview=placement(id);
   const point=pointFor(id);
   if (preview?.valid) act(preview.part.kind,point.x,point.y);
-  else if (preview) tone('fail');
+  else if (preview) {
+    const message=preview.part.kind==='trash'?'Apunta a una pieza para borrarla.':'La pieza no cabe aquí. Prueba otro lugar.';
+    $('placement-status').textContent=message;
+    tone('fail');
+  }
 }
 
 function buildKeypress(event) {
@@ -1080,8 +1138,7 @@ full.onclick=async()=>{
 document.addEventListener('fullscreenchange',()=>{
   const active=!!document.fullscreenElement;
   full.setAttribute('aria-pressed',String(active));
-  full.setAttribute('aria-label',active?'Salir de pantalla completa':'Activar pantalla completa');
-  full.title=full.getAttribute('aria-label');
+  full.textContent=active?'Salir de pantalla completa':'Pantalla completa';
 });
 
 function renderRoster(g) {
@@ -1089,11 +1146,10 @@ function renderRoster(g) {
   const ids=g.players.map(p=>p.id);
   $('roster').innerHTML=ids.map(id=>{
     const p=g.players.find(player=>player.id===id), c=avatar(p);
-    const label=id===self?'Tú':'En línea';
     const current=canDraft(g,id)||canBuildFor(g,id);
-    const tip=p?label+' · '+statuses[p.status]+(p.seal?' · Sello recogido':''):label;
-    return '<div class="player-row'+(current?' current':'')+(['out','away'].includes(p.status)?' out':'')+'" style="--player:'+COURIERS[id].color+'" title="'+tip+'">'+portrait(p)+
-      '<span><strong>'+c.name+(p.seal?' ✦':'')+'</strong><small>P'+(id+1)+' · '+label+'</small></span><span class="score">'+p.points+'</span></div>';
+    const identity=id===self?'Tú':'P'+(id+1);
+    return '<div role="listitem" class="player-row'+(current?' current':'')+(['out','away'].includes(p.status)?' out':'')+'" style="--player:'+COURIERS[id].color+'">'+portrait(p)+
+      '<span><strong>'+c.name+(p.seal?' <span aria-label="Sello recogido">✦</span>':'')+'</strong><small>'+identity+' · '+statuses[p.status]+'</small></span><span class="score">'+p.points+' <span class="visually-hidden">puntos</span></span></div>';
   }).join('');
   drawPortraitAccessories($('roster'));
 }
@@ -1333,9 +1389,7 @@ function renderPodium(sheet,g) {
 }
 
 function renderWork(g) {
-  const work=$('work'), sheet=$('sheet');
-  work.replaceChildren();
-  work.hidden=true;
+  const sheet=$('sheet');
   const phase=g?.phase;
   const finale=phase==='result'&&g.over;
   sheet.hidden=!['draft','result'].includes(phase);
@@ -1393,30 +1447,31 @@ function renderWork(g) {
     markCursors();
   } else if (finale) renderPodium(sheet,g);
   else if (phase==='result') renderScores(sheet,g);
-  else if (phase==='build') {
-    work.hidden=false;
-    const id=builder();
-    if (id===undefined) {
-      const wait=document.createElement('p');
-      wait.textContent='Esperando al resto de la cuadrilla.';
-      work.append(wait);
-      return;
-    }
-    const kind=g.picks[id], item=PIECES[kind];
-    const tools=document.createElement('div');
-    tools.className='build-tools';
-    tools.innerHTML='<div class="placement"><img src="'+pieceURL(kind)+'" alt=""><span><strong>'+item.name+'</strong><small>'+item.detail+'</small></span></div>';
-    if (DIRECTIONAL.has(kind)) {
-      const flip=button(pointFor(id).face===1?'Girar →':'Girar ←',()=>{
-        const point=pointFor(id);
-        buildPoints.set(id,{...point,face:-point.face});
-        flip.textContent=point.face===1?'Girar ←':'Girar →';
-      });
-      tools.append(flip);
-    }
-    tools.append(button('Pasar',()=>act('skip'),'ghost'));
-    work.append(tools);
+}
+
+function syncBuildTools(g,id) {
+  const canPlacePiece=id!==undefined;
+  $('touch-build').hidden=!canPlacePiece;
+  $('build-movement').hidden=!touchDevice.matches;
+  $('touch-place').hidden=!touchDevice.matches;
+  $('build-wait').hidden=g?.phase!=='build'||canPlacePiece;
+  if (!canPlacePiece) return;
+  const kind=g.picks[id], item=PIECES[kind];
+  const piece=$('build-piece');
+  if (piece.dataset.kind!==kind) {
+    piece.dataset.kind=kind;
+    const img=document.createElement('img');
+    img.src=pieceURL(kind);
+    img.alt='';
+    piece.querySelector('img')?.remove();
+    piece.prepend(img);
+    $('build-piece-name').textContent=item.name;
   }
+  $('build-flip').hidden=!DIRECTIONAL.has(kind);
+  showBuildDirection(pointFor(id).face);
+  const label=kind==='trash'?'Borrar':'Colocar';
+  $('touch-place').textContent=label;
+  $('touch-place').setAttribute('aria-label',kind==='trash'?'Borrar pieza':`Colocar ${item.name.toLowerCase()}`);
 }
 
 function syncUI(g) {
@@ -1428,6 +1483,7 @@ function syncUI(g) {
     buildPoints.clear();
     keys.clear();
     releaseBuildDrag();
+    $('placement-status').textContent='';
     buildKey=nextBuild;
   }
   if (uiKey!==key) {
@@ -1438,18 +1494,18 @@ function syncUI(g) {
     $('start-screen').hidden=!menu;
     const showingPodium=phase==='result'&&g.over;
     $('match-hud').hidden=!g||showingPodium;
-    $('controls').hidden=!g||showingPodium;
+    if ($('match-hud').hidden) closeDisclosure($('match-details'));
     $('exit').hidden=mode==='menu';
-    $('stage').classList.toggle('build',builder()!==undefined);
+    const builderId=builder();
+    $('stage').classList.toggle('build',builderId!==undefined);
     $('arena-label').textContent=(g?gameArena(g).name:roomMap?.name)??ARENAS[arena].name;
-    $('round-label').textContent=g?'RONDA '+g.round+' / '+(g.rules?.maxRounds??MAX_ROUNDS):'SALA EN LÍNEA';
-    $('phase').textContent={draft:'SELECCIÓN',build:'CONSTRUCCIÓN',countdown:'PREPARACIÓN',race:'CARRERA',result:g?.over?'FIN DE PARTIDA':'RESULTADOS'}[phase]??'SALA P2P';
+    $('round-label').textContent=g?'Ronda '+g.round+'/'+(g.rules?.maxRounds??MAX_ROUNDS):'';
+    $('phase').textContent={draft:'Selección',build:'Construcción',countdown:'Preparación',race:'Carrera',result:'Resultados'}[phase]??'';
     const goal=g?.rules?.winPoints??MAX_SCORE;
-    const finale=g?.over&&(g.players.some(p=>p.points>=goal)?'META DE PUNTOS ALCANZADA':'LÍMITE DE RONDAS ALCANZADO');
-    $('phase-note').textContent=phase==='draft'?(g.objectsReset?'OBJETOS REINICIADOS · ':'CAJA ABIERTA · ')+g.offer.length+' DISPONIBLES':phase==='build'?
-      g.players.filter(p=>canBuildFor(g,p.id)).length+' POR COLOCAR'
-      :phase==='race'?'ENTREGA TU PAQUETE · ✦ SELLO DE ESTILO'
-        :phase==='result'?finale||'SIGUIENTE RONDA EN BREVE':g?`${goal} ${goal===1?'PUNTO':'PUNTOS'} PARA GANAR`:'ESPERANDO A LA CUADRILLA';
+    const remaining=phase==='build'?g.players.filter(p=>canBuildFor(g,p.id)).length:0;
+    $('phase-note').textContent=phase==='draft'&&g.objectsReset?'Se reiniciaron los objetos de la pista.'
+      :phase==='build'?(remaining===1?'Queda 1 jugador por colocar.':`Quedan ${remaining} jugadores por colocar.`)
+        :g?`${goal} ${goal===1?'punto':'puntos'} para ganar.`:'';
     $('game-overlay').hidden=phase!=='countdown';
     $('overlay-title').textContent='';
     $('overlay-text').textContent='Prepárate para correr';
@@ -1457,16 +1513,15 @@ function syncUI(g) {
     let pad='';
     if (touchDevice.matches) {
       if (phase==='race'&&g.players.some(p=>p.id===self&&p.status==='running')) pad='race';
-      else if (canBuildFor(g,self)) pad='build';
+      else if (builderId!==undefined) pad='build';
     }
     if (touchPhase!==pad) {
       clearTouch();
       touchPhase=pad;
       $('touch').hidden=pad!=='race';
-      $('touch-build').hidden=pad!=='build';
-      if (pad==='build') $('touch-place').textContent=g.picks[self]==='trash'?'Borrar':'Colocar';
       $('stage').classList.toggle('touch-build-active',pad==='build');
     }
+    syncBuildTools(g,builderId);
     countText='';
     if (g) renderRoster(g);
     renderLobby();
