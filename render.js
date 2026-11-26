@@ -487,6 +487,18 @@ export function paintArena(ctx,map,t=0,drawWorld=true,showToken=false) {
   if (showToken) paintToken(ctx,map,t);
 }
 
+let previewAssets;
+export function paintArenaPreview(canvas,map) {
+  const ctx=canvas.getContext('2d');
+  const draw=()=>{if (canvas.isConnected) paintArena(ctx,map,0,true,true);};
+  draw();
+  const assets=[images.port,images.door,images.seal];
+  if (assets.some(asset=>!asset.complete)) {
+    previewAssets??=Promise.allSettled(assets.map(asset=>asset.decode()));
+    previewAssets.then(draw);
+  }
+}
+
 export function paint(ctx,g,arenaIndex,previews,time,viewer=null,drawWorld=true,map=g?gameArena(g):ARENAS[arenaIndex]) {
   const t=reduced.matches?0:time;
   const raceTime=reduced.matches?0:g?.elapsed;

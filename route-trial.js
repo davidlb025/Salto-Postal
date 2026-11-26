@@ -1,6 +1,6 @@
 import { PIECES, DIRECTIONAL, WIDTH, HEIGHT, RACE_TICK, newGame, beginRace, stepRaceRunner,
   settleRunner, pieceAt, canPlace, trashTarget, build } from './game.js?v=26';
-import { paint } from './render.js?v=26';
+import { paint } from './render.js?v=27';
 
 const moveKeys={KeyA:1,ArrowLeft:1,KeyD:2,ArrowRight:2,KeyW:4,ArrowUp:4,Space:4};
 const clamp=(value,max)=>Math.max(0,Math.min(max,value));

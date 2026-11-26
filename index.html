@@ -8,7 +8,7 @@
   <meta name="room-relay" content="">
   <meta name="room-config" content="https://salto-postal-davidlb025.web.app/room-config.json">
   <link rel="icon" href="./assets/door.png" type="image/png">
-  <link rel="stylesheet" href="./style.css?v=13">
+  <link rel="stylesheet" href="./style.css?v=15">
 </head>
 <body data-phase="menu">
   <main class="stage" id="stage" aria-label="Salto Postal">
@@ -50,7 +50,11 @@
         </div>
       </details>
     </header>
-    <section id="station" class="station" aria-labelledby="station-title" hidden></section>
+    <section id="station" class="station" aria-labelledby="station-title" hidden>
+      <div id="lobby-main" class="lobby-main"></div>
+      <aside id="lobby-settings" class="lobby-settings" aria-labelledby="lobby-settings-title"></aside>
+      <footer class="lobby-bottom"><p id="lobby-hint"></p><div class="actions"></div></footer>
+    </section>
     <div id="game-overlay" class="overlay" hidden><strong id="overlay-title"></strong><span id="overlay-text"></span></div>
     <section id="sheet" class="sheet" aria-label="Selección y resultados" hidden></section>
     <p id="build-wait" class="build-wait" role="status" hidden>Esperando al resto de la cuadrilla…</p>
@@ -89,6 +93,6 @@
     <dialog id="dialog" aria-labelledby="dialog-title"><div class="dialog-head"><h2 id="dialog-title"></h2><button class="ghost" id="close" aria-label="Cerrar">×</button></div><div id="dialog-body"></div></dialog>
   </main>
   <script defer src="./vendor/peerjs.min.js"></script>
-  <script type="module" src="./main.js?v=28"></script>
+  <script type="module" src="./main.js?v=30"></script>
 </body>
 </html>

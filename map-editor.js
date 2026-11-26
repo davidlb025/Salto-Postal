@@ -1,8 +1,8 @@
 import { ARENAS, roomRules } from './game.js?v=26';
 import { WIDTH, HEIGHT, MAX_PLATFORMS, blankMap, mapFromArena, arenaFromMap, readMap, readMapFile, downloadMap,
   isRouteVerified, routeVerification } from './map-data.js?v=11';
-import { paintArena } from './render.js?v=26';
-import { createRouteTrial } from './route-trial.js?v=2';
+import { paintArena } from './render.js?v=27';
+import { createRouteTrial } from './route-trial.js?v=3';
 
 const tools={
   platform:['Plataforma','Pulsa para colocar un tramo o arrastra de lado a lado para dibujar su ancho.'],

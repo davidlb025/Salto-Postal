@@ -7,9 +7,9 @@ import {
   pieceAt, canPlace, trashTarget, canDraft, canBuildFor, setPreview, draft, build, disconnect, step,
   beginRace, stepRaceRunner, settleRunner, finishRace, triggerRacePiece, ferryPosition,
 } from './game.js?v=26';
-import { paint, paintBackdrop, drawPortraitOutfit } from './render.js?v=26';
+import { paint, paintBackdrop, drawPortraitOutfit, paintArenaPreview } from './render.js?v=27';
 import { MAP_FORMAT_VERSION, arenaFromMap, downloadMap, isRouteVerified, readMap, readMapFile } from './map-data.js?v=11';
-import { openMapEditor } from './map-editor.js?v=26';
+import { openMapEditor } from './map-editor.js?v=27';
 import { pieceURL } from './props.js?v=11';
 import { ROOM_VERSION, createLink, shortSession, peerLink, normalizeCode, validCode, setRelay, clearRelay, hasRelay } from './network.js?v=15';
 import { relaySession, usesRoomRelay as usesWebSocketRelay } from './relay.js?v=15';
@@ -42,6 +42,7 @@ let raceStart=null,bestClockRtt=Infinity,nextClockProbe=0,endingRace=null;
 let publishedState='',nextMotion=0,nextResultPublish=0,resultResends=0;
 let profiles={0:defaultProfile(0)}, roomStatus='', roomError=false, connectedToRoom=false;
 let settings=roomRules(),buildDrag=null;
+let editingRoomRules=false,roomRulesView='';
 let sentPreview='',sentPreviewAt=0,canvasView={scale:1,x:0,y:0};
 let roomSession=null,roomCode='',hostedManually=false;
 let roomMap=null,roomMapKey='',roomMapRevision=0;
@@ -315,20 +316,19 @@ $('create-map').onclick=()=>openMapEditor();
 function pointLabel(points) {
   return `${points} ${points===1?'pto':'pts'}`;
 }
-function showRoomRules() {
-  if (mode!=='host'||game) return;
+function mountRoomRulesForm(panel) {
   const field=(name,label,min,max)=>`<label>${label}<input class="network-field" name="${name}" type="number" inputmode="numeric" min="${min}" max="${max}" step="1" required value="${settings[name]}"></label>`;
-  modal('Ajustes de partida','room-rules',`
+  panel.insertAdjacentHTML('beforeend',`
     <form id="room-rules-form">
+      <h4>Ritmo y movimiento</h4>
       <div class="rules-fields">
         ${field('maxRounds','Rondas máximas',1,ROUND_LIMIT)}
         <label>Reiniciar objetos cada<input class="network-field" name="resetEvery" type="number" inputmode="numeric" min="0" max="${ROUND_LIMIT}" step="1" required value="${settings.resetEvery}" aria-describedby="reset-help"></label>
       </div>
       <p id="reset-help">Indica el número de rondas. Con 0, solo se limpian por votación.</p>
-      <div class="rules-fields movement-fields">
+      <div class="rules-fields">
         ${field('jump','Salto (%)',MOVEMENT_MIN,MOVEMENT_MAX)}
         ${field('speed','Velocidad (%)',MOVEMENT_MIN,MOVEMENT_MAX)}
-        ${field('winPoints','Puntos para ganar',1,SCORE_LIMIT)}
       </div>
       <div class="rules-fields">
         ${field('pickTime','Elegir piezas (s)',PICK_SECONDS.min,PICK_SECONDS.max)}
@@ -336,31 +336,33 @@ function showRoomRules() {
       </div>
       <fieldset class="rules-scoring">
         <legend>Puntuación por ronda</legend>
-        <div class="rules-fields movement-fields">
+        <div class="rules-fields">
+          ${field('winPoints','Puntos para ganar',1,SCORE_LIMIT)}
           ${field('deliveryPoints','Entrega',0,ROUND_POINTS_LIMIT)}
           ${field('firstPoints','Primer puesto',0,ROUND_POINTS_LIMIT)}
           ${field('sealPoints','Sello',0,ROUND_POINTS_LIMIT)}
         </div>
         <label class="rules-toggle"><input type="checkbox" name="deliveryRequiresRivalFailure"${settings.deliveryRequiresRivalFailure?' checked':''}>La entrega puntúa solo si algún rival cae o agota el tiempo</label>
         <p>Se comparte el primer puesto al llegar en el mismo paso. El sello puntúa al entregar.</p>
-        <div class="rules-fields movement-fields">
+        <div class="rules-fields">
           ${field('trapPoints','Trampa por rival',0,ROUND_POINTS_LIMIT)}
           ${field('trapCap','Tope con entregas',0,TRAP_CAP_LIMIT)}
           ${field('trapCapWithoutFinish','Tope sin entregas',0,TRAP_CAP_LIMIT)}
         </div>
-        <p>Los topes de trampa se aplican por jugador y ronda. Los abandonos conservan los resultados confirmados. Con menos de dos resultados competitivos, la ronda se cancela.</p>
+        <p>Los topes de trampa se aplican por jugador y ronda.</p>
       </fieldset>
       <details class="rules-advanced">
-        <summary>Ajustes avanzados</summary>
+        <summary>Aparición de piezas</summary>
         <p>La caja reserva plazas para rutas y trampas. Cuanto más alto el peso de una pieza, más opciones tiene de salir. Con 0 queda fuera. El muelle y la papelera se ajustan en porcentaje.</p>
         <div class="rules-weights">${Object.entries(PIECES).map(([kind,item])=>`
           <label><span>${item.name}${['spring','trash'].includes(kind)?' (%)':''}</span><input class="network-field" type="number" name="${kind}" data-weight min="0" max="100" step="1" required value="${settings.weights[kind]}"></label>
         `).join('')}</div>
         <button type="button" id="restore-weights" class="ghost">Restablecer probabilidades</button>
       </details>
-      <div class="actions"><button type="submit" class="primary">Guardar</button></div>
+      <div class="actions rules-form-actions"><button type="button" id="cancel-room-rules" class="ghost">Cancelar</button><button type="submit" class="primary">Guardar cambios</button></div>
     </form>`);
   const form=$('room-rules-form'), weights=[...form.querySelectorAll('[data-weight]')];
+  $('cancel-room-rules').onclick=()=>setRoomRulesEditing(false);
   $('restore-weights').onclick=()=>{
     for (const input of weights) input.value=DEFAULT_WEIGHTS[input.name];
   };
@@ -389,11 +391,64 @@ function showRoomRules() {
       weights:Object.fromEntries(weights.map(input=>[input.name,input.valueAsNumber])),
     });
     broadcastLobby();
-    dialog.close();
+    setRoomRulesEditing(false);
   };
 }
+
+function setRoomRulesEditing(editing) {
+  if (mode!=='host'||game) return;
+  editingRoomRules=editing;
+  renderLobby();
+  $('lobby-settings').scrollTop=0;
+  if (editing) $('room-rules-form').elements.maxRounds.focus();
+  else $('room-rules').focus();
+}
+
+function renderRoomSettings(host) {
+  const panel=$('lobby-settings');
+  const view=JSON.stringify([host,editingRoomRules,settings]);
+  if (roomRulesView===view) return;
+  roomRulesView=view;
+  const weightsFocused=document.activeElement===panel.querySelector('.lobby-piece-rules summary');
+  const weightsOpen=panel.querySelector('details')?.open&&!editingRoomRules;
+  panel.innerHTML=`<header class="lobby-settings-head"><h3 id="lobby-settings-title">Ajustes de partida</h3></header>`;
+  if (host&&editingRoomRules) {
+    mountRoomRulesForm(panel);
+    return;
+  }
+  if (host) {
+    const edit=button('Editar',()=>setRoomRulesEditing(true),'ghost');
+    edit.id='room-rules';
+    edit.setAttribute('aria-label','Editar ajustes de partida');
+    panel.firstElementChild.append(edit);
+  }
+  const rows=entries=>`<dl class="lobby-rules-list">${entries.map(([label,value])=>`<div><dt>${label}</dt><dd>${value}</dd></div>`).join('')}</dl>`;
+  const {maxRounds,resetEvery,pickTime,raceTime,jump,speed,winPoints,deliveryPoints,firstPoints,sealPoints,
+    deliveryRequiresRivalFailure,trapPoints,trapCap,trapCapWithoutFinish,weights}=settings;
+  panel.insertAdjacentHTML('beforeend',`
+    <div id="room-rules-summary" class="lobby-rule-groups">
+      <section>
+        <h4>Ritmo y movimiento</h4>
+        ${rows([['Rondas máximas',maxRounds],['Limpieza de objetos',resetEvery?`Cada ${resetEvery} ${resetEvery===1?'ronda':'rondas'}`:'Por votación'],
+          ['Elegir piezas',`${pickTime} s`],['Carrera',`${raceTime} s`],['Salto',`${jump} %`],['Velocidad',`${speed} %`]])}
+      </section>
+      <section>
+        <h4>Puntuación</h4>
+        ${rows([['Puntos para ganar',winPoints],['Entrega',deliveryPoints],['Primer puesto',firstPoints],['Sello',sealPoints],
+          ['Trampa por rival',trapPoints],['Tope con entregas',trapCap],['Tope sin entregas',trapCapWithoutFinish]])}
+        <p class="lobby-rules-note">${deliveryRequiresRivalFailure?'La entrega puntúa si algún rival cae o agota el tiempo.':'Cada entrega puntúa en una ronda válida.'}</p>
+      </section>
+      <details class="lobby-piece-rules"${weightsOpen?' open':''}>
+        <summary>Aparición de piezas</summary>
+        ${rows(Object.entries(PIECES).map(([kind,item])=>[item.name,weights[kind]===0?'Fuera de la caja':`${weights[kind]}${['spring','trash'].includes(kind)?' %':''}`]))}
+        <p class="lobby-rules-note">Un peso mayor aumenta la posibilidad de que salga una pieza. El muelle y la papelera se expresan en porcentaje.</p>
+      </details>
+    </div>`);
+  if (weightsFocused) panel.querySelector('.lobby-piece-rules summary').focus({preventScroll:true});
+}
+
 function startMatch() {
-  if (mode!=='host'||game||!canStartRoom()) return;
+  if (mode!=='host'||game||editingRoomRules||!canStartRoom()) return;
   if (!roomMap) arena=chooseArena(voteResult(roster,profiles));
   game=newGame(roster,arena,profiles,settings,roomMap);
   resetRaceNetwork();
@@ -1238,15 +1293,26 @@ function drawPortraitAccessories(container) {
 function renderLobby() {
   const station=$('station');
   station.hidden=!!game||!(mode==='host'||connectedToRoom);
-  if (station.hidden) return;
+  if (station.hidden) {
+    editingRoomRules=false;
+    roomRulesView='';
+    return;
+  }
   const host=mode==='host';
+  const lobby=$('lobby-main'), actions=station.querySelector('.lobby-bottom .actions');
   const local=profiles[self]??defaultProfile(self);
+  const leading=voteResult(roster,profiles);
+  const preview=roomMap?arenaFromMap(roomMap):ARENAS[local.vote??leading??0];
+  const leadingName=ARENAS[leading]?.name??'Aleatorio';
+  const previewCaption=roomMap?(isRouteVerified(roomMap,settings)?'Ruta base verificada':'Ruta sin verificar')
+    :local.vote!==null&&local.vote!==leading?`Tu voto: ${preview.name} · En cabeza: ${leadingName}`
+      :leading!==null?`En cabeza · ${preview.name}`:`Sorteo entre ${ARENAS.length} pistas · Ejemplo: ${preview.name}`;
   const voteOption=(id,value,label)=>{
     const count=roster.filter(player=>profiles[player]?.vote===id).length;
     return `<option value="${value}"${local.vote===id?' selected':''}>${label}${count?` · ${count}`:''}</option>`;
   };
-  const focused=station.contains(document.activeElement)?document.activeElement.id:'';
-  station.innerHTML='<div class="lobby-title"><div><h2 id="station-title">Estación de reparto</h2><p id="host-count">'+roster.length+
+  const focused=lobby.contains(document.activeElement)||actions.contains(document.activeElement)?document.activeElement.id:'';
+  lobby.innerHTML='<div class="lobby-title"><div><h2 id="station-title">Estación de reparto</h2><p id="host-count">'+roster.length+
     ` / ${MAX_PLAYERS} repartidores</p></div><div id="room-invite"></div></div><div class="lobby-pads">`+COURIERS.slice(0,MAX_PLAYERS).map((slot,id)=>{
       const p=profiles[id];
       if (!roster.includes(id)||!p) return '<article class="lobby-pad vacant"><span>P'+(id+1)+'</span><div class="slot-empty"></div><p>Libre</p></article>';
@@ -1254,12 +1320,17 @@ function renderLobby() {
       const vote=roomMap?'':'<small>'+(ARENAS[p.vote]?.name??'Aleatorio')+'</small>';
       return '<article class="lobby-pad'+(p.ready?' ready':'')+'" style="--player:'+slot.color+'"><span>P'+(id+1)+(id===self?' · TÚ':'')+
         '</span>'+portrait({id,...p})+'<strong>'+c.name+'</strong><p>'+ (p.ready?'Listo':'Preparando')+'</p>'+vote+'</article>';
-    }).join('')+'</div><div class="lobby-controls">'+
+    }).join('')+'</div><div class="lobby-controls"><section class="lobby-profile" aria-labelledby="lobby-profile-title">'+
+    '<h3 id="lobby-profile-title">Tu repartidor</h3><div class="lobby-profile-fields">'+
     '<label>Animal<select id="animal-choice">'+COURIERS.map((c,id)=>'<option value="'+id+'"'+(local.animal===id?' selected':'')+'>'+c.species+' · '+c.name+'</option>').join('')+'</select></label>'+
-    '<label>Atuendo<select id="gear-choice">'+Object.entries(ACCESSORIES).map(([key,label])=>'<option value="'+key+'"'+(local.accessory===key?' selected':'')+'>'+label+'</option>').join('')+'</select></label>'+
+    '<label>Atuendo<select id="gear-choice">'+Object.entries(ACCESSORIES).map(([key,label])=>'<option value="'+key+'"'+(local.accessory===key?' selected':'')+'>'+label+'</option>').join('')+'</select></label></div></section>'+
+    '<section class="lobby-map-control" aria-labelledby="lobby-map-title"><div class="lobby-control-head"><h3 id="lobby-map-title">Pista</h3><div class="actions lobby-map-actions"></div></div>'+
     (roomMap?'<div class="lobby-map-choice"><span>Mapa de la sala</span><strong id="active-room-map"></strong></div>'
       :'<label>Voto de pista<select id="vote-choice">'+voteOption(null,'','Aleatorio')+
-        ARENAS.map((a,id)=>voteOption(id,id,a.name)).join('')+'</select></label>')+'</div><div class="lobby-bottom"><p id="lobby-hint"></p><div class="actions"></div></div>';
+        ARENAS.map((a,id)=>voteOption(id,id,a.name)).join('')+'</select></label>')+
+    `<figure class="lobby-map-preview"><canvas id="lobby-map-preview" width="${WIDTH}" height="${HEIGHT}" aria-hidden="true"></canvas><figcaption></figcaption></figure></section></div>`;
+  $('lobby-map-preview').nextElementSibling.textContent=previewCaption;
+  paintArenaPreview($('lobby-map-preview'),preview);
   const inviteSlot=$('room-invite');
   if (host&&hostedManually) inviteSlot.append(button('Invitar manualmente',showHost,'secondary'));
   else if (host) {
@@ -1282,42 +1353,31 @@ function renderLobby() {
   $('gear-choice').onchange=event=>changeProfile({accessory:event.target.value});
   if (roomMap) $('active-room-map').textContent=roomMap.name;
   else $('vote-choice').onchange=event=>changeProfile({vote:event.target.value===''?null:Number(event.target.value)});
-  const actions=station.querySelector('.lobby-bottom .actions');
+  actions.replaceChildren();
   const ready=button(local.ready?'Quitar listo':'Listo',()=>changeProfile({ready:!local.ready}),local.ready?'secondary':'primary');
   ready.id='ready-toggle';
   ready.setAttribute('aria-pressed',String(local.ready));
   actions.append(ready);
+  const mapActions=lobby.querySelector('.lobby-map-actions');
   if (roomMap) {
     const download=button('Descargar mapa',()=>downloadMap(roomMap),'ghost');
     download.id='download-room-map';
-    actions.prepend(download);
+    mapActions.append(download);
   }
   if (host) {
     const mapButton=button(roomMap?'Cambiar mapa':'Cargar mapa',showRoomMap,'ghost');
     mapButton.id='room-map-settings';
-    const rulesButton=button('Ajustes de partida',showRoomRules,'ghost');
-    rulesButton.id='room-rules';
-    actions.prepend(mapButton,rulesButton);
+    mapActions.prepend(mapButton);
     const start=button('Empezar partida',startMatch,'primary');
     start.id='host-start';
-    start.disabled=!canStartRoom();
+    start.disabled=!canStartRoom()||editingRoomRules;
     actions.append(start);
   }
-  const hint=roster.length<2?'Comparte la sala para empezar.':waitingForMapSupport()?'Pide a tus invitados que actualicen el juego para jugar con este mapa.'
+  const hint=editingRoomRules?'Guarda o cancela los cambios para empezar.':roster.length<2?'Comparte la sala para empezar.':waitingForMapSupport()?'Pide a tus invitados que actualicen el juego para jugar con este mapa.'
     :canStartRoom()?'Todos listos.':'Todos deben marcarse como listos.';
-  const leadingMap=ARENAS[voteResult(roster,profiles)]?.name;
-  $('lobby-hint').textContent=roomMap?(isRouteVerified(roomMap,settings)?hint:`${hint} Ruta sin verificar.`)
-    :`${hint} ${leadingMap?`Pista: ${leadingMap}.`:'Si gana Aleatorio, la pista se sortea al empezar.'}`;
-  const rulesSummary=document.createElement('p');
-  rulesSummary.id='room-rules-summary';
-  rulesSummary.textContent=`Hasta ${settings.maxRounds} ${settings.maxRounds===1?'ronda':'rondas'} · `+(settings.resetEvery
-    ?`Limpieza cada ${settings.resetEvery} ${settings.resetEvery===1?'ronda':'rondas'}`:'Limpieza por votación')+
-    ` · Meta ${pointLabel(settings.winPoints)} · Caja ${settings.pickTime} s · Carrera ${settings.raceTime} s`+
-    ` · Entrega ${settings.deliveryPoints} (${settings.deliveryRequiresRivalFailure?'si algún rival cae o agota el tiempo':'cada vez que entregas'})`+
-    ` · Primero ${settings.firstPoints} · Sello ${settings.sealPoints} · Trampa ${settings.trapPoints} por rival`+
-    ` · Topes ${settings.trapCap} con entregas y ${settings.trapCapWithoutFinish} sin entregas`;
-  station.querySelector('.lobby-title>div').append(rulesSummary);
-  drawPortraitAccessories(station);
+  $('lobby-hint').textContent=hint;
+  renderRoomSettings(host);
+  drawPortraitAccessories(lobby);
   if (focused&&$(focused)) $(focused).focus({preventScroll:true});
 }
 
