@@ -1,19 +1,20 @@
 import {
-  ARENAS, COURIERS, ACCESSORIES, avatar, defaultProfile, editProfile, voteResult, gameArena,
+  ARENAS, COURIERS, ACCESSORIES, avatar, defaultProfile, editProfile, voteResult, chooseArena, gameArena,
   PIECES, DIRECTIONAL, WIDTH, HEIGHT, MAX_ROUNDS, ROUND_LIMIT, MAX_SCORE, SCORE_LIMIT,
+  ROUND_POINTS_LIMIT, TRAP_CAP_LIMIT,
   MOVEMENT_MIN, MOVEMENT_MAX, DEFAULT_WEIGHTS, MAX_PLAYERS, PICK_SECONDS, RACE_SECONDS, RACE_TICK,
   roomRules, newGame, canVoteReset, voteReset, resetVoteStatus, rankPlayers,
   pieceAt, canPlace, trashTarget, canDraft, canBuildFor, setPreview, draft, build, disconnect, step,
   beginRace, stepRaceRunner, settleRunner, finishRace, triggerRacePiece, ferryPosition,
-} from './game.js?v=24';
-import { paint, paintBackdrop, drawPortraitOutfit } from './render.js?v=24';
-import { MAP_FORMAT_VERSION, arenaFromMap, downloadMap, readMap, readMapFile } from './map-data.js?v=10';
-import { openMapEditor } from './map-editor.js?v=24';
+} from './game.js?v=26';
+import { paint, paintBackdrop, drawPortraitOutfit } from './render.js?v=26';
+import { MAP_FORMAT_VERSION, arenaFromMap, downloadMap, isRouteVerified, readMap, readMapFile } from './map-data.js?v=11';
+import { openMapEditor } from './map-editor.js?v=26';
 import { pieceURL } from './props.js?v=11';
 import { ROOM_VERSION, createLink, shortSession, peerLink, normalizeCode, validCode, setRelay, clearRelay, hasRelay } from './network.js?v=15';
 import { relaySession, usesRoomRelay as usesWebSocketRelay } from './relay.js?v=15';
 import { managedSession, usesManagedRooms } from './managed-room.js?v=16';
-import { BuildMotion, RemoteRunners, motionPacket, raceTick, readRunnerPose, stateVersion } from './motion.js?v=24';
+import { BuildMotion, RemoteRunners, motionPacket, raceTick, readRunnerPose, stateVersion } from './motion.js?v=26';
 
 const usesRoomRelay=usesWebSocketRelay||usesManagedRooms;
 const openRoomSession=usesWebSocketRelay?relaySession:usesManagedRooms?managedSession:shortSession;
@@ -33,12 +34,12 @@ const buildMotion=new BuildMotion();
 const remoteRunners=new RemoteRunners();
 const pendingRaceMessages=[];
 const runnerPoses=new Map();
-const RACE_PROTOCOL=3;
+const RACE_PROTOCOL=4;
 const RACE_TICK_MS=RACE_TICK*1000;
 const FINISH_GRACE=1500,RESULT_HOLD=180;
 const RACE_PROTOCOL_NOTICE='Recarga el juego y pide a toda la sala que use la misma versión.';
 let raceStart=null,bestClockRtt=Infinity,nextClockProbe=0,endingRace=null;
-let publishedState='',nextMotion=0;
+let publishedState='',nextMotion=0,nextResultPublish=0,resultResends=0;
 let profiles={0:defaultProfile(0)}, roomStatus='', roomError=false, connectedToRoom=false;
 let settings=roomRules(),buildDrag=null;
 let sentPreview='',sentPreviewAt=0,canvasView={scale:1,x:0,y:0};
@@ -150,11 +151,12 @@ dialog.addEventListener('close',()=>{
   dialogPage='';
 });
 $('help').onclick=()=>{
+  const rules=game?.rules??settings;
   modal('Cómo jugar','help',`
     <p><strong>Elige.</strong> Todos pueden coger una pieza de la caja a la vez. La primera persona que la reclama se la queda.</p>
     <p><strong>Coloca.</strong> Todos construyen a la vez. En táctil, ajusta la pieza y pulsa Colocar. Con teclado, usa WASD o las flechas y confirma con E o Enter.</p>
-    <p><strong>Entrega.</strong> Entra en el escáner verde. Cada entrega vale 3 puntos si alguien se queda fuera. El primero en llegar recibe 1 punto, incluso si todos entregan.</p>
-    <p><strong>Bonos.</strong> Suma 1 por cada rival eliminado por una trampa tuya y 1 de estilo si recoges el sello dorado y entregas. La partida termina al alcanzar la meta de puntos o el límite de rondas de la sala.</p>
+    <p><strong>Entrega.</strong> Entra en el escáner verde. Cada entrega vale ${pointLabel(rules.deliveryPoints)}${rules.deliveryRequiresRivalFailure?' si algún rival cae o agota el tiempo':''}.</p>
+    <p><strong>Bonos.</strong> Cada corredor del primer puesto recibe ${pointLabel(rules.firstPoints)}. Entregar con el sello suma ${pointLabel(rules.sealPoints)}. Una trampa propia da ${pointLabel(rules.trapPoints)} por rival eliminado, hasta ${pointLabel(rules.trapCap)} con entregas o ${pointLabel(rules.trapCapWithoutFinish)} si nadie entrega.</p>
     <p>Corre con A/D o las flechas. Salta con W, ↑ o espacio.</p>
     ${touchDevice.matches?'<p>En <strong>Opciones → Controles táctiles</strong> puedes elegir flechas o joystick.</p>':''}`);
 };
@@ -225,16 +227,20 @@ function publishState() {
     raceStart=game.raceStartsAt=performance.now()+(game.deadline-game.elapsed)*1000;
   }
   const version=stateVersion(game);
-  if (version===publishedState) return;
+  const now=performance.now();
+  if (version===publishedState) {
+    if (game.phase!=='result'||resultResends===0||now<nextResultPublish) return;
+    resultResends--;
+  } else resultResends=game.phase==='result'?2:0;
   publishedState=version;
+  nextResultPublish=now+800;
   sendAll({type:'state',game});
 }
 function broadcastLobby(returnToLobby=false) {
   roster=[0,...activeLinks().map(link=>link.id)].sort((a,b)=>a-b);
   profiles=Object.fromEntries(roster.map(id=>[id,profiles[id]??defaultProfile(id)]));
-  const selected=voteResult(roster,profiles,arena);
   for(const link of activeLinks()) {
-    link.send({type:'lobby',raceProtocol:RACE_PROTOCOL,id:link.id,roster,arena:selected,profiles,rules:settings,returnToLobby,customMap:roomMap});
+    link.send({type:'lobby',raceProtocol:RACE_PROTOCOL,id:link.id,roster,arena,profiles,rules:settings,returnToLobby,customMap:roomMap});
   }
   if(dialogPage==='host') refreshHost();
 }
@@ -278,7 +284,8 @@ function showRoomMap() {
     </div>
     <input type="file" id="room-map-file" accept=".json,application/json" hidden>
     <p id="room-map-status" role="status"></p>`);
-  $('room-map-current').textContent=roomMap?roomMap.name:'Crea un mapa o carga un archivo de Salto Postal. Todos jugarán en esa pista.';
+  $('room-map-current').textContent=roomMap?roomMap.name+(isRouteVerified(roomMap,settings)?'':' · Ruta sin verificar')
+    :'Crea un mapa o carga un archivo de Salto Postal. Todos jugarán en esa pista.';
   const fileInput=$('room-map-file');
   const status=$('room-map-status');
   let upload=0;
@@ -297,7 +304,7 @@ function showRoomMap() {
   };
   $('edit-room-map').onclick=()=>{
     dialog.close();
-    openMapEditor({map:roomMap,onUse:useRoomMap});
+    openMapEditor({map:roomMap,rules:settings,profiles,onUse:useRoomMap});
   };
   if (roomMap) $('remove-room-map').onclick=()=>{
     useRoomMap(null);
@@ -327,6 +334,22 @@ function showRoomRules() {
         ${field('pickTime','Elegir piezas (s)',PICK_SECONDS.min,PICK_SECONDS.max)}
         ${field('raceTime','Carrera (s)',RACE_SECONDS.min,RACE_SECONDS.max)}
       </div>
+      <fieldset class="rules-scoring">
+        <legend>Puntuación por ronda</legend>
+        <div class="rules-fields movement-fields">
+          ${field('deliveryPoints','Entrega',0,ROUND_POINTS_LIMIT)}
+          ${field('firstPoints','Primer puesto',0,ROUND_POINTS_LIMIT)}
+          ${field('sealPoints','Sello',0,ROUND_POINTS_LIMIT)}
+        </div>
+        <label class="rules-toggle"><input type="checkbox" name="deliveryRequiresRivalFailure"${settings.deliveryRequiresRivalFailure?' checked':''}>La entrega puntúa solo si algún rival cae o agota el tiempo</label>
+        <p>Se comparte el primer puesto al llegar en el mismo paso. El sello puntúa al entregar.</p>
+        <div class="rules-fields movement-fields">
+          ${field('trapPoints','Trampa por rival',0,ROUND_POINTS_LIMIT)}
+          ${field('trapCap','Tope con entregas',0,TRAP_CAP_LIMIT)}
+          ${field('trapCapWithoutFinish','Tope sin entregas',0,TRAP_CAP_LIMIT)}
+        </div>
+        <p>Los topes de trampa se aplican por jugador y ronda. Los abandonos conservan los resultados confirmados. Con menos de dos resultados competitivos, la ronda se cancela.</p>
+      </fieldset>
       <details class="rules-advanced">
         <summary>Ajustes avanzados</summary>
         <p>La caja reserva plazas para rutas y trampas. Cuanto más alto el peso de una pieza, más opciones tiene de salir. Con 0 queda fuera. El muelle y la papelera se ajustan en porcentaje.</p>
@@ -356,6 +379,13 @@ function showRoomRules() {
       speed:form.elements.speed.valueAsNumber,
       pickTime:form.elements.pickTime.valueAsNumber,
       raceTime:form.elements.raceTime.valueAsNumber,
+      deliveryPoints:form.elements.deliveryPoints.valueAsNumber,
+      deliveryRequiresRivalFailure:form.elements.deliveryRequiresRivalFailure.checked,
+      firstPoints:form.elements.firstPoints.valueAsNumber,
+      sealPoints:form.elements.sealPoints.valueAsNumber,
+      trapPoints:form.elements.trapPoints.valueAsNumber,
+      trapCap:form.elements.trapCap.valueAsNumber,
+      trapCapWithoutFinish:form.elements.trapCapWithoutFinish.valueAsNumber,
       weights:Object.fromEntries(weights.map(input=>[input.name,input.valueAsNumber])),
     });
     broadcastLobby();
@@ -364,7 +394,7 @@ function showRoomRules() {
 }
 function startMatch() {
   if (mode!=='host'||game||!canStartRoom()) return;
-  arena=voteResult(roster,profiles,arena);
+  if (!roomMap) arena=chooseArena(voteResult(roster,profiles));
   game=newGame(roster,arena,profiles,settings,roomMap);
   resetRaceNetwork();
   lastEvent=0;
@@ -381,6 +411,13 @@ function resetRaceNetwork() {
   bestClockRtt=Infinity;
   nextClockProbe=0;
   endingRace=null;
+}
+function returnToRoom() {
+  game=null;
+  resetRaceNetwork();
+  clearInputs();
+  profiles=Object.fromEntries(roster.map(id=>[id,{...profiles[id],ready:false}]));
+  broadcastLobby(true);
 }
 function reset() {
   const peers=[...links.values(),hostLink].filter(Boolean);
@@ -768,8 +805,11 @@ function receiveGuest(link,message) {
   }
   if (message.type==='state'&&message.game?.players&&ARENAS[message.game.arena]) {
     const next=message.game;
-    const sameRound=game?.match===next.match&&game.round===next.round;
+    const sameMatch=game?.match===next.match;
+    if (sameMatch&&next.round<game.round) return;
+    const sameRound=sameMatch&&game.round===next.round;
     if (sameRound&&game.phase==='race'&&next.phase!=='result') return;
+    if (sameRound&&game.phase==='result'&&next.phase!=='result') return;
     if (next.customMap) {
       try { next.customMap=game?.match===next.match&&game.customMap?game.customMap:readMap(next.customMap); }
       catch { return; }
@@ -1165,15 +1205,21 @@ document.addEventListener('fullscreenchange',()=>{
   full.textContent=active?'Salir de pantalla completa':'Pantalla completa';
 });
 
+function runnerStatus(p,g) {
+  const trap=p.outcome==='hit'?g.placed[p.hitTrap]:null;
+  if (trap&&trap.owner!==p.id) return `Eliminado por P${trap.owner+1}`;
+  return {abandon:'Abandono',timeout:'Tiempo agotado',hit:'Eliminado',finish:'Entregado'}[p.outcome]??
+    {away:'Desconectado',ready:'Preparado',running:'En carrera',out:'Eliminado',done:'Entregado'}[p.status];
+}
+
 function renderRoster(g) {
-  const statuses={away:'Desconectado',ready:'Preparado',running:'En carrera',out:'Eliminado',done:'Entregado'};
   const ids=g.players.map(p=>p.id);
   $('roster').innerHTML=ids.map(id=>{
     const p=g.players.find(player=>player.id===id), c=avatar(p);
     const current=canDraft(g,id)||canBuildFor(g,id);
     const identity=id===self?'Tú':'P'+(id+1);
     return '<div role="listitem" class="player-row'+(current?' current':'')+(['out','away'].includes(p.status)?' out':'')+'" style="--player:'+COURIERS[id].color+'">'+portrait(p)+
-      '<span><strong>'+c.name+(p.seal?' <span aria-label="Sello recogido">✦</span>':'')+'</strong><small>'+identity+' · '+statuses[p.status]+'</small></span><span class="score">'+p.points+' <span class="visually-hidden">puntos</span></span></div>';
+      '<span><strong>'+c.name+(p.seal?' <span aria-label="Sello recogido">✦</span>':'')+'</strong><small>'+identity+' · '+runnerStatus(p,g)+'</small></span><span class="score">'+p.points+' <span class="visually-hidden">puntos</span></span></div>';
   }).join('');
   drawPortraitAccessories($('roster'));
 }
@@ -1195,24 +1241,25 @@ function renderLobby() {
   if (station.hidden) return;
   const host=mode==='host';
   const local=profiles[self]??defaultProfile(self);
+  const voteOption=(id,value,label)=>{
+    const count=roster.filter(player=>profiles[player]?.vote===id).length;
+    return `<option value="${value}"${local.vote===id?' selected':''}>${label}${count?` · ${count}`:''}</option>`;
+  };
   const focused=station.contains(document.activeElement)?document.activeElement.id:'';
   station.innerHTML='<div class="lobby-title"><div><h2 id="station-title">Estación de reparto</h2><p id="host-count">'+roster.length+
     ` / ${MAX_PLAYERS} repartidores</p></div><div id="room-invite"></div></div><div class="lobby-pads">`+COURIERS.slice(0,MAX_PLAYERS).map((slot,id)=>{
       const p=profiles[id];
       if (!roster.includes(id)||!p) return '<article class="lobby-pad vacant"><span>P'+(id+1)+'</span><div class="slot-empty"></div><p>Libre</p></article>';
       const c=avatar({id,...p});
-      const vote=roomMap?'':'<small>'+(p.vote===null?'Sin voto':ARENAS[p.vote].name)+'</small>';
+      const vote=roomMap?'':'<small>'+(ARENAS[p.vote]?.name??'Aleatorio')+'</small>';
       return '<article class="lobby-pad'+(p.ready?' ready':'')+'" style="--player:'+slot.color+'"><span>P'+(id+1)+(id===self?' · TÚ':'')+
         '</span>'+portrait({id,...p})+'<strong>'+c.name+'</strong><p>'+ (p.ready?'Listo':'Preparando')+'</p>'+vote+'</article>';
     }).join('')+'</div><div class="lobby-controls">'+
     '<label>Animal<select id="animal-choice">'+COURIERS.map((c,id)=>'<option value="'+id+'"'+(local.animal===id?' selected':'')+'>'+c.species+' · '+c.name+'</option>').join('')+'</select></label>'+
     '<label>Atuendo<select id="gear-choice">'+Object.entries(ACCESSORIES).map(([key,label])=>'<option value="'+key+'"'+(local.accessory===key?' selected':'')+'>'+label+'</option>').join('')+'</select></label>'+
     (roomMap?'<div class="lobby-map-choice"><span>Mapa de la sala</span><strong id="active-room-map"></strong></div>'
-      :'<label>Voto de pista<select id="vote-choice"><option value=""'+(local.vote===null?' selected':'')+'>Sin voto</option>'+
-        ARENAS.map((a,id)=>{
-          const count=roster.filter(player=>profiles[player].vote===id).length;
-          return '<option value="'+id+'"'+(local.vote===id?' selected':'')+'>'+a.name+(count?' · '+count:'')+'</option>';
-        }).join('')+'</select></label>')+'</div><div class="lobby-bottom"><p id="lobby-hint"></p><div class="actions"></div></div>';
+      :'<label>Voto de pista<select id="vote-choice">'+voteOption(null,'','Aleatorio')+
+        ARENAS.map((a,id)=>voteOption(id,id,a.name)).join('')+'</select></label>')+'</div><div class="lobby-bottom"><p id="lobby-hint"></p><div class="actions"></div></div>';
   const inviteSlot=$('room-invite');
   if (host&&hostedManually) inviteSlot.append(button('Invitar manualmente',showHost,'secondary'));
   else if (host) {
@@ -1258,28 +1305,43 @@ function renderLobby() {
   }
   const hint=roster.length<2?'Comparte la sala para empezar.':waitingForMapSupport()?'Pide a tus invitados que actualicen el juego para jugar con este mapa.'
     :canStartRoom()?'Todos listos.':'Todos deben marcarse como listos.';
-  $('lobby-hint').textContent=roomMap?hint:`${hint} Pista: ${ARENAS[voteResult(roster,profiles,arena)].name}.`;
+  const leadingMap=ARENAS[voteResult(roster,profiles)]?.name;
+  $('lobby-hint').textContent=roomMap?(isRouteVerified(roomMap,settings)?hint:`${hint} Ruta sin verificar.`)
+    :`${hint} ${leadingMap?`Pista: ${leadingMap}.`:'Si gana Aleatorio, la pista se sortea al empezar.'}`;
   const rulesSummary=document.createElement('p');
   rulesSummary.id='room-rules-summary';
   rulesSummary.textContent=`Hasta ${settings.maxRounds} ${settings.maxRounds===1?'ronda':'rondas'} · `+(settings.resetEvery
     ?`Limpieza cada ${settings.resetEvery} ${settings.resetEvery===1?'ronda':'rondas'}`:'Limpieza por votación')+
-    ` · Meta ${pointLabel(settings.winPoints)} · Caja ${settings.pickTime} s · Carrera ${settings.raceTime} s`;
+    ` · Meta ${pointLabel(settings.winPoints)} · Caja ${settings.pickTime} s · Carrera ${settings.raceTime} s`+
+    ` · Entrega ${settings.deliveryPoints} (${settings.deliveryRequiresRivalFailure?'si algún rival cae o agota el tiempo':'cada vez que entregas'})`+
+    ` · Primero ${settings.firstPoints} · Sello ${settings.sealPoints} · Trampa ${settings.trapPoints} por rival`+
+    ` · Topes ${settings.trapCap} con entregas y ${settings.trapCapWithoutFinish} sin entregas`;
   station.querySelector('.lobby-title>div').append(rulesSummary);
   drawPortraitAccessories(station);
   if (focused&&$(focused)) $(focused).focus({preventScroll:true});
 }
 
 const scoreKeys=[
-  ['goal','Entrega','#7ce4ba'],['first','Primero','#fbca74'],['trap','Trampa','#ff956e'],['style','Estilo','#c2a8fc'],
+  ['goal','Entrega','#7ce4ba'],['first','Primer puesto','#fbca74'],['trap','Trampa','#ff956e'],['style','Sello','#c2a8fc'],
 ];
 
-function renderScores(sheet,g) {
+function roundNumber(g) {
+  return g.competitiveRounds+Number(g.phase!=='result'||g.cancelled);
+}
+
+function renderScores(sheet,g,showTitle=true) {
   const goal=g.rules?.winPoints??MAX_SCORE;
   const total=Math.max(goal,...g.players.map(p=>p.points));
   const legend=scoreKeys.map(([,label,color])=>'<span style="--reason:'+color+'"><i></i>'+label+'</span>').join('');
-  sheet.innerHTML='<div class="score-title"><div><h2></h2><span>Ronda '+g.round+'</span></div>'+
-    '<span class="goal-tag">Meta '+goal+'</span></div><div class="legend">'+legend+'</div>';
-  sheet.querySelector('h2').textContent=g.result;
+  sheet.innerHTML=(showTitle?'<div class="score-title"><div><h2></h2><span>Ronda '+roundNumber(g)+'</span></div>'+
+    '<span class="goal-tag">Meta '+goal+'</span></div>':'')+'<div class="legend">'+legend+'</div>';
+  if (showTitle) sheet.querySelector('h2').textContent=g.result;
+  if (g.roundNote&&(showTitle||!g.roundNote.startsWith('Primero compartido'))) {
+    const note=document.createElement('p');
+    note.className='round-note';
+    note.textContent=g.roundNote;
+    sheet.append(note);
+  }
   const scores=document.createElement('div');
   scores.className='scoreboard';
   for (const p of g.players) {
@@ -1297,8 +1359,9 @@ function renderScores(sheet,g) {
         (stamp?' style="--stamp:'+stamp.color+';--i:'+i+'"':'')+'></i>';
     }).join('');
     const reasons=scoreKeys.filter(([key])=>p.score[key]).map(([key,label])=>label+' +'+p.score[key]).join(' · ');
+    const breakdown=[runnerStatus(p,g),!p.connected&&p.outcome&&p.outcome!=='abandon'&&'Desconectado',`+${p.gain} esta ronda`,reasons].filter(Boolean).join(' · ');
     row.innerHTML='<strong>'+portrait(p)+'<span>P'+(p.id+1)+' '+c.name+'</span></strong><div class="score-track" style="--cells:'+Math.min(total,25)+
-      '" aria-hidden="true">'+bars+'</div><strong class="score-total">'+p.points+'</strong><div class="breakdown">'+(p.connected?(reasons||'+0 esta ronda'):'Desconectado')+'</div>';
+      '" aria-hidden="true">'+bars+'</div><strong class="score-total">'+p.points+'</strong><div class="breakdown">'+breakdown+'</div>';
     scores.append(row);
   }
   sheet.append(scores);
@@ -1330,6 +1393,12 @@ function renderPodium(sheet,g) {
   scene.style.setProperty('--celebration',celebration+'ms');
   const result=scene.querySelector('.podium-result');
   result.textContent=g.result;
+  if (g.roundNote.startsWith('Primero compartido')) {
+    const note=document.createElement('p');
+    note.className='round-note';
+    note.textContent=g.roundNote;
+    result.after(note);
+  }
   const steps=scene.querySelector('.podium');
   const columns=Math.max(1,slots.length);
   scene.style.setProperty('--columns',columns);
@@ -1371,18 +1440,21 @@ function renderPodium(sheet,g) {
     row.textContent=`${rank}º · P${id+1} ${avatar(player).name} · ${pointLabel(player.points)}`;
     footer.insertBefore(row,actions);
   }
+  const details=document.createElement('details');
+  const summary=document.createElement('summary');
+  summary.textContent='Puntuación de la última ronda';
+  const roundScores=document.createElement('div');
+  details.className='podium-scores';
+  details.append(summary,roundScores);
+  renderScores(roundScores,g,false);
+  footer.insertBefore(details,actions);
   drawPortraitAccessories(scene);
 
   const skip=button('Saltar animación',()=>{
     scene.classList.add('podium-instant');
     finishReveal();
   },'ghost');
-  const back=mode==='host'?button('Volver al lobby',()=>{
-    game=null;
-    resetRaceNetwork();
-    profiles=Object.fromEntries(roster.map(id=>[id,{...profiles[id],ready:false}]));
-    broadcastLobby(true);
-  },'primary'):null;
+  const back=mode==='host'?button('Volver al lobby',returnToRoom,'primary'):null;
   actions.append(skip);
   if (back) {
     back.hidden=true;
@@ -1501,7 +1573,7 @@ function syncBuildTools(g,id) {
 function syncUI(g) {
   const phase=g?.phase;
   const key=JSON.stringify([mode,arena,self,roster,!g&&profiles,!g&&settings,!g&&roomCode,!g&&roomStatus,!g&&roomError,connectedToRoom,roomMapRevision,waitingForMapSupport(),
-    g?.match,g?.round,phase,g?.over,g?.finishedBuilding,g?.picks,g?.players.map(p=>[p.points,p.status,p.seal])]);
+    g?.match,g?.round,phase,g?.over,g?.returnToLobby,g?.finishedBuilding,g?.picks,g?.players.map(p=>[p.points,p.status,p.outcome,p.connected,p.seal])]);
   const nextBuild=phase==='build'?g.match+'/'+g.round:'';
   if (buildKey!==nextBuild) {
     buildPoints.clear();
@@ -1523,7 +1595,7 @@ function syncUI(g) {
     const builderId=builder();
     $('stage').classList.toggle('build',builderId!==undefined);
     $('arena-label').textContent=(g?gameArena(g).name:roomMap?.name)??ARENAS[arena].name;
-    $('round-label').textContent=g?'Ronda '+g.round+'/'+(g.rules?.maxRounds??MAX_ROUNDS):'';
+    $('round-label').textContent=g?'Ronda '+roundNumber(g)+'/'+(g.rules?.maxRounds??MAX_ROUNDS):'';
     $('phase').textContent={draft:'Selección',build:'Construcción',countdown:'Preparación',race:'Carrera',result:'Resultados'}[phase]??'';
     const goal=g?.rules?.winPoints??MAX_SCORE;
     const remaining=phase==='build'?g.players.filter(p=>canBuildFor(g,p.id)).length:0;
@@ -1727,6 +1799,10 @@ function frame(now) {
     while (accumulator>=RACE_TICK&&game.phase!=='countdown') {
       step(game,{},RACE_TICK);
       accumulator-=RACE_TICK;
+      if (game.returnToLobby&&game.elapsed>=game.deadline) {
+        returnToRoom();
+        break;
+      }
     }
   } else accumulator=0;
   publishState();
@@ -1755,7 +1831,7 @@ function frame(now) {
       playEffect(view.phase==='result'&&event.sound==='finish'?'round':event.sound);
     }
   }
-  const shownArena=game?.arena??(mode==='host'||connectedToRoom?voteResult(roster,profiles,arena):arena);
+  const shownArena=game?.arena??voteResult(roster,profiles)??arena;
   const shownMap=game?gameArena(game):roomMap?arenaFromMap(roomMap):ARENAS[shownArena];
   ctx.setTransform(1,0,0,1,0,0);
   paintBackdrop(ctx,shownArena,canvas.width,canvas.height,now/1000,shownMap);

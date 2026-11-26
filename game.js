@@ -1,4 +1,4 @@
-import { WIDTH, HEIGHT, arenaFromMap } from './map-data.js?v=10';
+import { WIDTH, HEIGHT, arenaFromMap } from './map-data.js?v=11';
 
 export { WIDTH, HEIGHT };
 export const MAX_ROUNDS = 15;
@@ -6,9 +6,11 @@ export const ROUND_LIMIT = 20;
 export const RESET_EVERY = 5;
 export const MAX_SCORE = 15;
 export const SCORE_LIMIT = 50;
+export const ROUND_POINTS_LIMIT = 20;
 export const MOVEMENT_MIN = 65;
 export const MOVEMENT_MAX = 150;
 export const MAX_PLAYERS = 4;
+export const TRAP_CAP_LIMIT = (MAX_PLAYERS-1)*ROUND_POINTS_LIMIT;
 export const PICK_SECONDS = { min:5, max:60, default:13 };
 export const RACE_SECONDS = { min:10, max:120, default:30 };
 export const RACE_TICK = 1/120;
@@ -59,6 +61,13 @@ export function roomRules(rules) {
     maxRounds:bounded(rules?.maxRounds,1,ROUND_LIMIT,MAX_ROUNDS),
     resetEvery:bounded(rules?.resetEvery,0,ROUND_LIMIT,RESET_EVERY),
     winPoints:bounded(rules?.winPoints,1,SCORE_LIMIT,MAX_SCORE),
+    deliveryPoints:bounded(rules?.deliveryPoints,0,ROUND_POINTS_LIMIT,3),
+    deliveryRequiresRivalFailure:rules?.deliveryRequiresRivalFailure!==false,
+    firstPoints:bounded(rules?.firstPoints,0,ROUND_POINTS_LIMIT,1),
+    sealPoints:bounded(rules?.sealPoints,0,ROUND_POINTS_LIMIT,1),
+    trapPoints:bounded(rules?.trapPoints,0,ROUND_POINTS_LIMIT,1),
+    trapCap:bounded(rules?.trapCap,0,TRAP_CAP_LIMIT,2),
+    trapCapWithoutFinish:bounded(rules?.trapCapWithoutFinish,0,TRAP_CAP_LIMIT,1),
     jump:bounded(rules?.jump,MOVEMENT_MIN,MOVEMENT_MAX,100),
     speed:bounded(rules?.speed,MOVEMENT_MIN,MOVEMENT_MAX,100),
     pickTime:bounded(rules?.pickTime,PICK_SECONDS.min,PICK_SECONDS.max,PICK_SECONDS.default),
@@ -104,16 +113,22 @@ export function editProfile(profile,patch) {
   return next;
 }
 
-export function voteResult(ids,profiles,fallback) {
+export function voteResult(ids,profiles) {
   const counts=new Map();
   for (const id of ids) {
-    const vote=profiles[id]?.vote;
-    if (Number.isInteger(vote)&&ARENAS[vote]) counts.set(vote,(counts.get(vote)??0)+1);
+    const vote=profiles[id]?.vote??null;
+    if (vote===null||(Number.isInteger(vote)&&ARENAS[vote])) counts.set(vote,(counts.get(vote)??0)+1);
   }
   const best=Math.max(0,...counts.values());
-  if (!best) return fallback;
+  if (!best) return null;
   const tied=[...counts.keys()].filter(vote=>counts.get(vote)===best);
-  return tied.includes(profiles[0]?.vote)?profiles[0].vote:Math.min(...tied);
+  if (tied.length===1) return tied[0];
+  const hostVote=profiles[0]?.vote??null;
+  return tied.includes(hostVote)?hostVote:Math.min(...tied.filter(Number.isInteger));
+}
+
+export function chooseArena(vote) {
+  return vote??Math.floor(Math.random()*ARENAS.length);
 }
 const overlap = (a,b) => a.x<b.x+b.w && a.x+a.w>b.x && a.y<b.y+b.h && a.y+a.h>b.y;
 const PLACE_TIME=16;
@@ -161,7 +176,8 @@ function roundOffer(g) {
 }
 
 export function canVoteReset(g,id) {
-  return Array.isArray(g?.resetVotes)&&!g.over&&g.round<(g.rules?.maxRounds??MAX_ROUNDS)&&
+  return Array.isArray(g?.resetVotes)&&!g.over&&!g.returnToLobby&&
+    g.competitiveRounds+Number(g.phase!=='result')<g.rules.maxRounds&&
     g.players.some(player=>player.id===id&&player.connected);
 }
 
@@ -176,12 +192,13 @@ export function resetVoteStatus(g) {
   const players=active(g);
   const votes=players.filter(player=>g.resetVotes?.includes(player.id)).length;
   const every=g.rules?.resetEvery??0;
-  return {votes,total:players.length,scheduled:every>0&&g.round>0&&g.round%every===0,
+  const scheduled=g.phase==='result'&&!g.cancelled&&g.competitiveRounds>0&&every>0&&g.competitiveRounds%every===0;
+  return {votes,total:players.length,scheduled,
     unanimous:players.length>0&&votes===players.length};
 }
 
 export function rankPlayers(players) {
-  const ranked=players.filter(player=>player.connected).sort((a,b)=>b.points-a.points||a.id-b.id);
+  const ranked=[...players].sort((a,b)=>b.points-a.points||a.id-b.id);
   return ranked.map(player=>({id:player.id,rank:ranked.findIndex(other=>other.points===player.points)+1}));
 }
 
@@ -190,7 +207,7 @@ export function newGame(ids,arena,profiles={},rules,customMap=null) {
     match:crypto.randomUUID?.() ?? String(Date.now()+Math.random()),
     players:ids.map(id=>({id,points:0,gain:0,connected:true,totalScore:totals(),
       animal:profiles[id]?.animal??id,accessory:profiles[id]?.accessory??'none'})), arena,rules:roomRules(rules),
-    phase:'draft', round:0, elapsed:0, deadline:0, placed:[], finishedBuilding:{}, previews:{}, finish:[],
+    phase:'draft', round:0, competitiveRounds:0, elapsed:0, deadline:0, placed:[], finishedBuilding:{}, previews:{}, finish:[],
     event:{id:0,sound:''}, events:[], result:'',
   };
   if (customMap) g.customMap=customMap;
@@ -215,6 +232,11 @@ function nextRound(g) {
   g.finishedBuilding={};
   g.previews={};
   g.finish=[];
+  g.arrivals=[];
+  g.participants=[];
+  g.cancelled=false;
+  g.returnToLobby=false;
+  g.roundNote='';
   g.result='';
   for (const part of g.placed) {
     delete part.collapseAt;
@@ -501,10 +523,11 @@ function runnerHitbox(p) {
 
 export function disconnect(g,id) {
   const p=g.players.find(player=>player.id===id);
-  if (!p) return;
+  if (!p?.connected) return;
   p.connected=false;
-  p.status='away';
-  if (g.phase!=='result') p.score=totals();
+  if (p.status==='running') settleRunner(g,p,'abandon',g.elapsed);
+  else if (!p.outcome) p.status='away';
+  if (g.phase==='result'&&!g.over&&active(g).length<2) g.returnToLobby=true;
   if (g.phase==='draft'&&active(g).every(player=>Object.hasOwn(g.picks,player.id))) closeDraft(g);
   if (g.phase==='build') {
     delete g.previews[id];
@@ -513,39 +536,63 @@ export function disconnect(g,id) {
 }
 
 export function finishRace(g) {
-  const current=active(g);
-  for (const p of current) if (p.status==='running') settleRunner(g,p,'timeout',g.deadline);
-  const finish=current.filter(p=>p.status==='done').sort((a,b)=>a.endedAt-b.endedAt||a.id-b.id).map(p=>p.id);
-  g.finish=finish;
-  for (const victim of g.players) {
-    const part=g.placed[victim.hitTrap];
-    const owner=part&&current.find(p=>p.id===part.owner&&p.id!==victim.id);
-    if (owner) owner.score.trap++;
-  }
-  const contested=finish.length<current.length;
-  for (const p of current) {
-    if (finish.includes(p.id)) {
-      p.score.goal=contested?3:0;
-      p.score.first=Number(finish[0]===p.id);
-      p.score.style=Number(p.seal);
+  if (g.phase!=='race') return;
+  const participants=g.players.filter(p=>g.participants.includes(p.id));
+  for (const p of participants) if (p.status==='running') settleRunner(g,p,'timeout',g.deadline);
+  const competitive=participants.filter(p=>p.outcome&&p.outcome!=='abandon');
+  const arrivals=[...g.arrivals].sort((a,b)=>a.tick-b.tick||a.id-b.id);
+  g.finish=arrivals.map(({id})=>id);
+  const firstTick=arrivals[0]?.tick;
+  const first=arrivals.filter(({tick})=>tick===firstTick).map(({id})=>id);
+  const hasFinish=arrivals.length>0;
+  const contested=competitive.some(p=>p.outcome==='hit'||p.outcome==='timeout');
+  const deliveryEarned=contested||!g.rules.deliveryRequiresRivalFailure;
+  const trapCap=hasFinish?g.rules.trapCap:g.rules.trapCapWithoutFinish;
+  g.cancelled=competitive.length<2;
+  if (!g.cancelled) {
+    g.competitiveRounds++;
+    for (const victim of competitive) {
+      const trap=g.placed[victim.hitTrap];
+      const owner=trap&&participants.find(p=>p.id===trap.owner&&p.id!==victim.id);
+      if (owner) owner.score.trap+=g.rules.trapPoints;
     }
-    p.gain=sum(p.score);
-    p.points+=p.gain;
-    for (const key of Object.keys(p.score)) p.totalScore[key]+=p.score[key];
+    let capped=false;
+    for (const p of participants) {
+      capped||=p.score.trap>trapCap;
+      p.score.trap=Math.min(p.score.trap,trapCap);
+      if (p.outcome==='finish') {
+        p.score.goal=deliveryEarned?g.rules.deliveryPoints:0;
+        p.score.first=first.includes(p.id)?g.rules.firstPoints:0;
+        p.score.style=p.seal?g.rules.sealPoints:0;
+      }
+      p.gain=sum(p.score);
+      p.points+=p.gain;
+      for (const key of Object.keys(p.score)) p.totalScore[key]+=p.score[key];
+    }
+    const notes=[];
+    if (hasFinish&&!deliveryEarned&&g.rules.deliveryPoints>0) notes.push(g.finish.length===participants.length?'Todos entregaron · sin bono de entrega':'Sin bono de entrega · los demás abandonaron');
+    if (capped) notes.push(`Trampa · máximo de ${trapCap}${hasFinish?'':' sin entregas'}`);
+    g.roundNote=notes.join(' · ');
   }
   g.raceEndedAt=g.elapsed;
   g.phase='result';
   g.elapsed=0;
-  const best=Math.max(0,...current.map(p=>p.points));
-  const winners=current.filter(p=>p.points===best).map(p=>'P'+(p.id+1)+' '+avatar(p).name);
-  g.over=g.round>=(g.rules?.maxRounds??MAX_ROUNDS)||best>=(g.rules?.winPoints??MAX_SCORE);
-  if (g.over) g.standings=rankPlayers(current);
+  const label=id=>'P'+(id+1)+' '+avatar(g.players.find(p=>p.id===id)).name;
+  const best=Math.max(0,...g.players.map(p=>p.points));
+  const winners=g.players.filter(p=>p.points===best).map(p=>label(p.id));
+  g.over=!g.cancelled&&(g.competitiveRounds>=g.rules.maxRounds||best>=g.rules.winPoints);
+  if (g.over) g.standings=rankPlayers(g.players);
+  g.returnToLobby=!g.over&&active(g).length<2;
   g.deadline=g.over?0:6;
-  g.result=g.over
-    ? (winners.length===1?'Gana '+winners[0]:'Empate · '+winners.join(' / '))
-    : finish.length===0?'Nadie entregó'
-      : finish.length===current.length?'Todos entregaron':'Primero en llegar: P'+(finish[0]+1)+' '+avatar(g.players.find(p=>p.id===finish[0])).name;
-  emit(g,g.over?'podium':finish.length?'finish':'fail');
+  const finishLabel=first.length>1?'Primero compartido · '+first.map(label).join(' / ')
+    : hasFinish?'Primero en llegar · '+label(first[0]):'Nadie entregó';
+  g.result=g.cancelled?'Ronda cancelada':finishLabel;
+  if (g.cancelled) g.roundNote='Menos de dos resultados competitivos · marcador conservado';
+  if (g.over) {
+    if (first.length>1) g.roundNote=[finishLabel,g.roundNote].filter(Boolean).join(' · ');
+    g.result=winners.length===1?'Gana '+winners[0]:'Empate · '+winners.join(' / ');
+  }
+  emit(g,g.over?'podium':!g.cancelled&&hasFinish?'finish':'fail');
 }
 
 function advanceRunner(g,p,input,dt,time,solids,onEvent) {
@@ -619,7 +666,9 @@ export function beginRace(g) {
   g.phase='race';
   g.elapsed=0;
   g.deadline=g.rules.raceTime;
-  for (const p of active(g)) p.status='running';
+  const runners=active(g);
+  g.participants=runners.map(p=>p.id);
+  for (const p of runners) p.status='running';
   emit(g,'go');
 }
 
@@ -638,11 +687,14 @@ export function triggerRacePiece(g,index,at) {
 export function settleRunner(g,p,outcome,at,trap=null) {
   if (p.status!=='running') return false;
   p.outcome=outcome;
-  p.status=outcome==='finish'?'done':'out';
-  if (outcome==='finish') p.vx=p.vy=0;
+  p.status=outcome==='finish'?'done':outcome==='abandon'?'away':'out';
+  if (outcome==='finish') {
+    p.vx=p.vy=0;
+    g.arrivals.push({id:p.id,tick:Math.round(at/RACE_TICK)});
+  }
   p.endedAt=at;
   p.hitTrap=trap;
-  if (outcome!=='timeout') emit(g,outcome,p);
+  if (outcome==='finish'||outcome==='hit') emit(g,outcome,p);
   return true;
 }
 
@@ -675,12 +727,17 @@ export function stepRaceRunner(g,p,input,dt,onTrap) {
 
 export function step(g,inputs,dt) {
   if (g.over) return;
-  g.elapsed+=dt;
+  const previous=g.elapsed;
+  const elapsed=previous+dt;
+  g.elapsed=elapsed;
   if (g.phase==='draft'&&g.elapsed>=g.deadline) closeDraft(g);
   else if (g.phase==='build'&&g.elapsed>=g.deadline) beginCountdown(g);
   else if (g.phase==='countdown'&&g.elapsed>=g.deadline) beginRace(g);
   else if (g.phase==='race') {
-    for (const p of active(g)) stepRaceRunner(g,p,inputs[p.id]||0,dt);
+    const time=dt===RACE_TICK?Math.round(elapsed/RACE_TICK)*RACE_TICK:elapsed;
+    g.elapsed=time>=g.deadline-1e-9?g.deadline:time;
+    const raceDt=Math.min(dt,Math.max(0,g.deadline-previous));
+    for (const p of active(g)) stepRaceRunner(g,p,inputs[p.id]||0,raceDt);
     if (g.elapsed>=g.deadline||active(g).every(p=>p.status!=='running')) finishRace(g);
-  } else if (g.phase==='result'&&g.elapsed>=g.deadline) nextRound(g);
+  } else if (g.phase==='result'&&!g.returnToLobby&&g.elapsed>=g.deadline) nextRound(g);
 }

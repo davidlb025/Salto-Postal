@@ -1,4 +1,4 @@
-import { ferryPosition, HEIGHT, PIECES, RACE_TICK, WIDTH } from './game.js?v=24';
+import { ferryPosition, HEIGHT, PIECES, RACE_TICK, WIDTH } from './game.js?v=26';
 
 const blend=(a,b,t)=>a+(b-a)*t;
 const clamp=(value,min,max)=>Math.max(min,Math.min(max,value));

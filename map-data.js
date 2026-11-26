@@ -10,6 +10,22 @@ const between=(value,min,max)=>Number.isInteger(value)&&value>=min&&value<=max;
 const overlap=(a,b)=>a.x<b.x+b.w&&a.x+a.w>b.x&&a.y<b.y+b.h&&a.y+a.h>b.y;
 const geometry=({x,y,w})=>({x,y,w});
 
+function routeGeometry(map) {
+  const box=({x,y,w})=>[x,y,w];
+  return JSON.stringify([map.gravity,box(map.origin),box(map.destination),map.seal.x,map.seal.y,map.platforms.map(box)]);
+}
+
+export function routeVerification(map,{jump,speed,raceTime}) {
+  return {geometry:routeGeometry(map),jump,speed,raceTime};
+}
+
+export function isRouteVerified(map,rules) {
+  const saved=map.routeVerification;
+  if (!saved) return false;
+  const current=routeVerification(map,rules);
+  return Object.keys(current).every(key=>saved[key]===current[key]);
+}
+
 export function blankMap() {
   return {
     format,version:MAP_FORMAT_VERSION,name:'Mapa sin título',theme:'dock',gravity:1090,
@@ -76,6 +92,10 @@ export function readMap(value) {
   }
   if (floor.some(box=>overlap(box,token))||overlap(token,exit)) {
     throw new Error('Deja el sello en un espacio libre.');
+  }
+  const saved=value.routeVerification;
+  if (saved?.geometry===routeGeometry(map)&&[saved.jump,saved.speed,saved.raceTime].every(Number.isInteger)) {
+    map.routeVerification=routeVerification(map,saved);
   }
   return map;
 }

@@ -1,6 +1,8 @@
-import { ARENAS } from './game.js?v=24';
-import { WIDTH, HEIGHT, MAX_PLATFORMS, blankMap, mapFromArena, arenaFromMap, readMap, readMapFile, downloadMap } from './map-data.js?v=10';
-import { paintArena } from './render.js?v=24';
+import { ARENAS, roomRules } from './game.js?v=26';
+import { WIDTH, HEIGHT, MAX_PLATFORMS, blankMap, mapFromArena, arenaFromMap, readMap, readMapFile, downloadMap,
+  isRouteVerified, routeVerification } from './map-data.js?v=11';
+import { paintArena } from './render.js?v=26';
+import { createRouteTrial } from './route-trial.js?v=2';
 
 const tools={
   platform:['Plataforma','Pulsa para colocar un tramo o arrastra de lado a lado para dibujar su ancho.'],
@@ -46,20 +48,23 @@ function createEditor() {
       </div>
     </div>
     <footer class="editor-footer">
-      <p id="editor-status" role="status"></p>
+      <div class="editor-feedback"><p id="editor-verification"></p><p id="editor-status" role="status"></p></div>
       <div class="actions">
+        <button type="button" id="editor-trial">Probar mapa</button>
         <button type="button" id="editor-download" class="primary">Descargar mapa</button>
         <button type="button" id="editor-use" class="primary" hidden>Usar en esta sala</button>
       </div>
     </footer>`;
-  document.getElementById('stage').append(dialog);
+  const stage=document.getElementById('stage');
+  stage.append(dialog);
+  const testRoute=createRouteTrial(stage);
   const $=id=>dialog.querySelector('#'+id);
   const canvas=dialog.querySelector('canvas');
   const ctx=canvas.getContext('2d');
   const name=$('editor-name'), base=$('editor-base'), theme=$('editor-theme'), gravity=$('editor-gravity');
   const status=$('editor-status'), undo=$('editor-undo'), use=$('editor-use'), file=$('editor-file');
   const buttons=new Map(), history=[];
-  let draft=blankMap(), tool='platform', onUse, session=0, importId=0;
+  let draft=blankMap(), tool='platform', onUse, rules, profiles, session=0, importId=0;
   let point={x:480,y:224}, hover=false, gesture=null, keyboardAnchor=null, frame=0;
 
   for (const [index,arena] of ARENAS.entries()) {
@@ -93,12 +98,17 @@ function createEditor() {
     $('editor-count').textContent=`${draft.platforms.length} / ${MAX_PLATFORMS} plataformas`;
     undo.disabled=!history.length;
     name.removeAttribute('aria-invalid');
+    $('editor-verification').textContent=isRouteVerified(draft,rules)?'Ruta base verificada':'Ruta sin verificar';
   }
 
   function change(next,message='') {
     history.push(draft);
     if (history.length>50) history.shift();
     draft=next;
+    if (draft.routeVerification&&!isRouteVerified(draft,draft.routeVerification)) {
+      draft={...draft};
+      delete draft.routeVerification;
+    }
     status.textContent=message;
     syncFields();
   }
@@ -281,6 +291,23 @@ function createEditor() {
       if (!name.value.trim()) { name.setAttribute('aria-invalid','true');name.focus(); }
     }
   }
+  $('editor-trial').onclick=()=>save(map=>{
+    importId++;
+    gesture=keyboardAnchor=null;
+    hover=false;
+    cancelAnimationFrame(frame);
+    testRoute(map,{rules,profiles,
+      onVerified:()=>{
+        draft={...draft,routeVerification:routeVerification(map,rules)};
+        syncFields();
+      },
+      onBack:()=>{
+        if (!dialog.open) return;
+        $('editor-trial').focus({preventScroll:true});
+        draw();
+      },
+    });
+  });
   $('editor-download').onclick=()=>save(map=>{
     downloadMap(map);
     status.textContent='Mapa preparado para descargar.';
@@ -295,10 +322,12 @@ function createEditor() {
     gesture=keyboardAnchor=null;
   });
 
-  return ({map=null,onUse:apply=null})=>{
+  return ({map=null,onUse:apply=null,rules:room,profiles:players={}})=>{
     if (dialog.open) return;
     session++;
     onUse=apply;
+    rules=roomRules(room);
+    profiles=players;
     if (map) {
       draft=map;
       history.length=0;

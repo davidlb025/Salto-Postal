@@ -15,7 +15,7 @@ from aiohttp import WSMsgType, web
 ROOT = Path(__file__).resolve().parent
 FILES = {
     "game.js", "main.js", "motion.js", "network.js", "props.js", "relay.js",
-    "managed-room.js", "map-data.js", "map-editor.js",
+    "managed-room.js", "map-data.js", "map-editor.js", "route-trial.js",
     "render.js", "style.css", "vendor/peerjs.min.js",
 }
 ASSET_PATH = re.compile(r"assets/[a-z0-9-]+\.(?:png|webp|ttf)")

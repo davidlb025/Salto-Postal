@@ -182,6 +182,7 @@ body[data-phase="result"] .sheet:not(.podium-sheet) {background:#28283e;border-c
 .score-track .new {animation:score-in 220ms steps(4,end) both;animation-delay:calc(min(var(--i),16) * 21ms)}
 .score-track .finish-cell {outline:2px solid #edb76a;outline-offset:0}
 .breakdown {grid-column:2/4;color:var(--muted);font-size:13px}
+.round-note {color:var(--muted);font-size:14px}
 .sheet.podium-sheet {
   inset:0;z-index:4;translate:none;display:block;width:auto;max-height:none;
   padding:0;border:0;border-radius:0;box-shadow:none;text-align:center;animation:none;
@@ -257,6 +258,9 @@ body[data-phase="result"] .sheet:not(.podium-sheet) {background:#28283e;border-c
 }
 .podium-step small,.podium-remaining {font-size:clamp(11px,2.7vw,16px);line-height:1.12;color:var(--ink)}
 .podium-footer {display:grid;justify-items:center;gap:6px}
+.podium-scores {width:min(540px,calc(100vw - 32px));text-align:left}
+.podium-scores summary {cursor:pointer;color:var(--ink);text-align:center}
+.podium-scores>div {display:grid;gap:5px;padding:8px}
 .podium-remaining {animation:podium-fade 260ms var(--ease) var(--celebration) both}
 .podium-actions {display:grid;min-height:40px;place-items:center}
 .podium-actions button {min-height:40px}
@@ -356,9 +360,20 @@ dialog[open] {animation:arrive 220ms var(--ease) both}
   display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;
   margin-top:12px;padding-top:8px;border-top:1px solid var(--edge);
 }
-#editor-status {flex:1;min-width:min(230px,100%);color:var(--amber);font-size:14px}
+.editor-feedback {color:var(--muted);font-size:14px}
+#editor-status {color:var(--amber)}
 #editor-status:empty {display:none}
 .editor-footer .actions {margin-left:auto}
+.route-trial canvas.trial-racing {cursor:default}
+.trial-tools,.trial-touch {display:flex;gap:8px;align-items:end;flex-wrap:wrap;margin-top:8px}
+.trial-tools label {display:grid;gap:4px}
+.trial-tools select {min-height:36px}
+.trial-touch {display:none}
+.trial-touch button {min-width:54px;touch-action:none;user-select:none}
+.trial-directions {display:flex;gap:8px}
+.stage[data-touch-layout="joystick"] .trial-directions,
+.stage:not([data-touch-layout="joystick"]) .trial-touch .touch-stick {display:none}
+#trial-time {margin-left:auto;color:var(--amber);font-variant-numeric:tabular-nums}
 @media(max-width:685px) {
   .editor-workspace {grid-template-columns:1fr}
   .editor-tools {display:grid;grid-template-columns:repeat(3,minmax(0,1fr))}
@@ -370,6 +385,7 @@ dialog[open] {animation:arrive 220ms var(--ease) both}
 @media(pointer:coarse) {
   .map-editor button,.map-editor select {min-height:44px}
   #editor-keys {display:none}
+  .trial-touch:not([hidden]) {display:flex}
 }
 #dialog-body,#exchange,#guest-output,#join-form,#relay-form {display:grid;gap:8px}
 #dialog-body p {color:var(--muted)}
@@ -378,6 +394,10 @@ dialog[open] {animation:arrive 220ms var(--ease) both}
 .rules-fields,.rules-weights {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
 .rules-fields {align-items:end}
 .movement-fields {grid-template-columns:repeat(3,minmax(0,1fr))}
+.rules-scoring {display:grid;gap:8px;min-width:0;border:1px solid var(--edge);padding:8px}
+.rules-scoring legend {padding-inline:4px;color:var(--ink);font-weight:700}
+#dialog-body .rules-toggle {display:flex;align-items:center;gap:8px;min-height:44px;cursor:pointer}
+.rules-toggle input {flex:none;width:18px;height:18px;margin:0;accent-color:var(--mint)}
 .rules-weights {
   max-height:min(38dvh,305px);overflow:auto;scrollbar-width:thin;padding:3px 5px 3px 3px;
 }
@@ -494,7 +514,7 @@ textarea {font:13px monospace;resize:vertical}
 @keyframes pop {from {transform:scale(.9);opacity:.75}to {transform:scale(1);opacity:1}}
 @keyframes score-in {from {transform:scale(.76);opacity:.2}to {transform:scale(1);opacity:1}}
 @media (pointer:coarse) and (hover:none) {
-  #room-rules-form button,#room-rules-form input,#close,#skip-pick {min-height:44px}
+  #room-rules-form button,#room-rules-form input[type="number"],#close,#skip-pick {min-height:44px}
   #close {min-width:44px}
   #dialog-body input:not(.room-code),#dialog-body textarea,.lobby-controls select {font-size:max(16px,1em)}
   #playfield {inset:calc(var(--hud-top) + 50px) var(--safe-right) var(--touch-bottom) var(--safe-left)}

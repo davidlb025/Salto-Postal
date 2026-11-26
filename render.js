@@ -1,4 +1,4 @@
-import { ARENAS, COURIERS, avatar, DIRECTIONAL, WIDTH, HEIGHT, raceGeometry, raceSolids, showSeal, gameArena, placementGuide, placementBody } from './game.js?v=24';
+import { ARENAS, COURIERS, avatar, DIRECTIONAL, WIDTH, HEIGHT, raceGeometry, raceSolids, showSeal, gameArena, placementGuide, placementBody } from './game.js?v=26';
 import { drawProp } from './props.js?v=11';
 
 const images=Object.fromEntries([
